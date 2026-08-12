@@ -16,12 +16,16 @@ class ManifestDataset(Dataset):
     """Manifest-backed RGB crack-segmentation dataset.
 
     True-normal RGB rows are represented explicitly with ``is_normal=true`` and
-    may omit ``mask``.  Their segmentation target is a virtual all-zero mask.
+    may omit ``mask``. Their segmentation target is a virtual all-zero mask.
     Crack-positive rows MUST provide a real mask; a missing crack mask is an
     error rather than an implicit conversion to a normal example.
+
+    ``return_is_normal=True`` is used only by training/diagnostic code that must
+    distinguish true-normal RGB from a crack-positive mask that accidentally
+    becomes empty after resizing. Inference keeps the legacy ``(x, y)`` API.
     """
 
-    def __init__(self, manifest, split, size):
+    def __init__(self, manifest, split, size, return_is_normal=False):
         self.rows = [
             json.loads(line)
             for line in Path(manifest).read_text().splitlines()
@@ -31,6 +35,7 @@ class ManifestDataset(Dataset):
         if not self.rows:
             raise ValueError(f"manifest has no rows for split={split!r}")
         self.size = int(size)
+        self.return_is_normal = bool(return_is_normal)
 
     def __len__(self):
         return len(self.rows)
@@ -45,9 +50,6 @@ class ManifestDataset(Dataset):
         is_normal = bool(row.get("is_normal", False))
         mask_path = row.get("mask")
         if is_normal:
-            # True normal RGB has no crack anywhere in the frame.  Keep the
-            # zero target virtual instead of materialising thousands of black
-            # PNG files on disk.
             y = np.zeros((1, self.size, self.size), dtype=np.float32)
         else:
             if not mask_path:
@@ -60,4 +62,8 @@ class ManifestDataset(Dataset):
             y = (np.asarray(mask, dtype=np.uint8) > 127).astype(np.float32)[None]
 
         x = np.asarray(image, dtype=np.float32).transpose(2, 0, 1) / 127.5 - 1.0
-        return torch.from_numpy(x), torch.from_numpy(y)
+        x_t = torch.from_numpy(x)
+        y_t = torch.from_numpy(y)
+        if self.return_is_normal:
+            return x_t, y_t, torch.tensor(is_normal, dtype=torch.bool)
+        return x_t, y_t
