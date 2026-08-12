@@ -38,10 +38,6 @@ def _decoded_binary_mask(path):
     return (arr > 127).astype(np.uint8)
 
 
-def _decoded_binary_mask_sha256(path):
-    return _array_sha256(_decoded_binary_mask(path), "binary-mask")
-
-
 def _pair_sha256(rgb_digest, mask_digest):
     h = hashlib.sha256()
     h.update(rgb_digest.encode("ascii"))
@@ -156,8 +152,9 @@ def audit(
 
             raw_mask = _sha256_file(mask_path)
             decoded_mask = _array_sha256(binary, "binary-mask")
-            raw_mask_rows[raw_mask].append((i, split, str(mask_path.resolve())))
-            decoded_mask_rows[decoded_mask].append((i, split, str(mask_path.resolve())))
+            mask_item = (i, split, str(mask_path.resolve()))
+            raw_mask_rows[raw_mask].append(mask_item)
+            decoded_mask_rows[decoded_mask].append(mask_item)
             pair_rows[_pair_sha256(decoded_rgb, decoded_mask)].append(item)
 
             iw, ih = Image.open(image_path).size
@@ -200,23 +197,33 @@ def audit(
             splits = {item[1] for item in items}
             labels = {item[2] for item in items}
             if len(splits) > 1:
-                errors.append(f"{kind} duplicate across splits: {digest} in {sorted(splits)}")
+                errors.append(
+                    f"{kind} duplicate across splits: {digest} in {sorted(splits)}"
+                )
             if len(labels) > 1:
-                errors.append(f"{kind} cross-label duplicate (normal vs crack): {digest}")
+                errors.append(
+                    f"{kind} cross-label duplicate (normal vs crack): {digest}"
+                )
 
     def check_mask_groups(kind, groups):
         for digest, items in groups.items():
-            paths = {item[2] for item in items}
             splits = {item[1] for item in items}
-            if len(paths) > 1 and len(splits) > 1:
-                errors.append(f"{kind} duplicate across splits: {digest} in {sorted(splits)}")
+            if len(splits) > 1:
+                paths = sorted({item[2] for item in items})
+                errors.append(
+                    f"{kind} reused across splits: {digest} in {sorted(splits)} "
+                    f"paths={paths[:5]}"
+                )
 
     def check_pair_groups(groups):
         for digest, items in groups.items():
             paths = {item[3] for item in items}
             splits = {item[1] for item in items}
             if len(paths) > 1 and len(splits) > 1:
-                errors.append(f"decoded image-mask pair duplicate across splits: {digest} in {sorted(splits)}")
+                errors.append(
+                    f"decoded image-mask pair duplicate across splits: "
+                    f"{digest} in {sorted(splits)}"
+                )
 
     check_rgb_groups("raw-image", raw_rgb_rows)
     check_rgb_groups("decoded-rgb", decoded_rgb_rows)
