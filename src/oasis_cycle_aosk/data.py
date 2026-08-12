@@ -47,9 +47,17 @@ class ManifestDataset(Dataset):
             (self.size, self.size), resample=Image.Resampling.BILINEAR
         )
 
-        is_normal = bool(row.get("is_normal", False))
+        if not isinstance(row.get("is_normal"), bool):
+            raise ValueError(
+                f"is_normal must be a JSON boolean: image={image_path}"
+            )
+        is_normal = row.get("is_normal") is True
         mask_path = row.get("mask")
         if is_normal:
+            if mask_path not in (None, ""):
+                raise ValueError(
+                    f"true-normal row must use mask=null: image={image_path}"
+                )
             y = np.zeros((1, self.size, self.size), dtype=np.float32)
         else:
             if not mask_path:
