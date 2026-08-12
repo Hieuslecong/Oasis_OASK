@@ -4,6 +4,8 @@
 No model predictions are used. The script checks corrupt images, raw and decoded
 RGB duplicates, cross-label duplicates against an optional cracked-reference
 folder, dimensions, and writes a deterministic contact sheet for visual QC.
+Exact duplicate normal RGB is a hard failure because otherwise one surface can
+be over-sampled under multiple filenames.
 """
 import argparse
 import csv
@@ -192,6 +194,13 @@ def main():
         count=args.contact_sheet_count,
     )
 
+    clean = not (
+        corrupt
+        or raw_dupes
+        or decoded_dupes
+        or cross_raw
+        or cross_decoded
+    )
     summary = {
         "normal_root": str(normal_root),
         "cracked_reference_root": str(cracked_root) if cracked_root else None,
@@ -204,9 +213,7 @@ def main():
         "cross_label_decoded_duplicate_groups": len(cross_decoded),
         "normal_dimensions": dict(dim_counts),
         "contact_sheet": sheet,
-        "status": "PASS"
-        if not corrupt and not cross_raw and not cross_decoded
-        else "FAIL",
+        "status": "PASS" if clean else "FAIL",
     }
     (out / "duplicate_groups.json").write_text(
         json.dumps(
