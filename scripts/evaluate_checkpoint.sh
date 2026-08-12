@@ -9,6 +9,9 @@ THRESHOLD="${4:?Missing validation-selected threshold}"
 OUTPUT="${5:?Missing output JSON}"
 export PYTHONPATH="$PACKAGE_ROOT/src${PYTHONPATH:+:$PYTHONPATH}"
 
+# Do not pass --size here. evaluate_rc reads the training resolution from the
+# checkpoint and rejects accidental resolution changes unless an explicit
+# ablation flag is supplied by the caller.
 python -m oasis_cycle_aosk.evaluate_rc \
   --checkpoint "$CHECKPOINT" --manifest "$MANIFEST" \
-  --split "$SPLIT" --size 128 --threshold "$THRESHOLD" --out "$OUTPUT"
+  --split "$SPLIT" --threshold "$THRESHOLD" --out "$OUTPUT"
