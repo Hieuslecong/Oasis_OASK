@@ -13,7 +13,7 @@ class MixedBatchSampler(Sampler):
         [crack dataset rows][normal dataset rows]
 
     Each epoch exposes every crack sample approximately once (subject to the
-    final partial cycle) while cycling through the normal pool as needed.  The
+    final partial cycle) while cycling through the normal pool as needed. The
     composition is deterministic for a given seed and epoch.
     """
 
@@ -42,9 +42,16 @@ class MixedBatchSampler(Sampler):
         self.normal_per_batch = int(round(self.batch_size * self.normal_fraction))
         self.normal_per_batch = min(self.normal_per_batch, self.batch_size - 1)
         self.crack_per_batch = self.batch_size - self.normal_per_batch
+        if self.normal_fraction > 0 and self.normal_per_batch == 0:
+            raise ValueError(
+                "requested normal_fraction is too small for this batch_size; "
+                "increase batch_size or normal_fraction so at least one normal "
+                "sample is present per batch"
+            )
         if self.normal_per_batch > 0 and self.normal_count <= 0:
             raise ValueError("normal_fraction > 0 requires normal samples")
 
+        self.realized_normal_fraction = self.normal_per_batch / self.batch_size
         self.steps = int(math.ceil(self.crack_count / self.crack_per_batch))
 
     def set_epoch(self, epoch):
@@ -63,7 +70,11 @@ class MixedBatchSampler(Sampler):
         g = torch.Generator()
         g.manual_seed(self.seed + self.epoch)
         crack_iter = self._infinite_permutations(self.crack_count, g)
-        normal_iter = self._infinite_permutations(self.normal_count, g) if self.normal_per_batch else None
+        normal_iter = (
+            self._infinite_permutations(self.normal_count, g)
+            if self.normal_per_batch
+            else None
+        )
 
         for _ in range(self.steps):
             batch = [next(crack_iter) for _ in range(self.crack_per_batch)]
@@ -72,6 +83,5 @@ class MixedBatchSampler(Sampler):
                     self.crack_count + next(normal_iter)
                     for _ in range(self.normal_per_batch)
                 )
-            # Shuffle positions within the batch without changing composition.
             order = torch.randperm(len(batch), generator=g).tolist()
             yield [batch[i] for i in order]
