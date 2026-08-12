@@ -10,7 +10,7 @@ NORMAL_FRACTION="${NORMAL_FRACTION:-0.25}"
 RUN_ROOT="${RUN_ROOT:-$PACKAGE_ROOT/runs/four_arm_micro_${STUDENT_KIND}}"
 export PYTHONPATH="$PACKAGE_ROOT/src${PYTHONPATH:+:$PYTHONPATH}"
 
-IMAGE_SIZE="$(python - <<'PY' "$CONFIG"
+IMAGE_SIZE="$(python - "$CONFIG" <<'PY'
 import sys, yaml
 print(int(yaml.safe_load(open(sys.argv[1]))['image_size']))
 PY
