@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """Measure auxiliary-gradient strength/alignment without updating the model.
 
-This script never reads the test split and never calls optimizer.step().
-It uses the same RC-v2 and AOSK objectives as training.
+The diagnostic never reads the test split, never calls ``optimizer.step()``,
+and uses a fixed eval-mode student so BatchNorm running buffers are not mutated.
+RC corruption uses an independent RNG stream and therefore cannot perturb the
+augmentation/data RNG contract used by controlled training.
 """
 import argparse
 import json
@@ -14,10 +16,12 @@ import torch
 import yaml
 
 from oasis_cycle_aosk.aosk import oriented_consistency_loss
+from oasis_cycle_aosk.audit import audit
 from oasis_cycle_aosk.losses_v2 import segmentation_loss, oasis_rc_student_loss_v2
 from oasis_cycle_aosk.models import RelationalOASISRC
 from oasis_cycle_aosk.train_oasis_rc_v2 import (
     make_corrupted_mask,
+    make_generator,
     make_student,
     make_train_loader,
     seed_all,
@@ -52,12 +56,14 @@ def _grads(loss, params, retain_graph):
         allow_unused=True,
         create_graph=False,
     )
-    return [torch.zeros_like(p) if g is None else g.detach() for p, g in zip(params, raw)]
+    return [
+        torch.zeros_like(p) if g is None else g.detach()
+        for p, g in zip(params, raw)
+    ]
 
 
 def _norm(grads):
-    value = sum(float((g.double() ** 2).sum()) for g in grads)
-    return math.sqrt(value)
+    return math.sqrt(sum(float((g.double() ** 2).sum()) for g in grads))
 
 
 def _dot(a, b):
@@ -89,7 +95,7 @@ def main():
     p = argparse.ArgumentParser()
     p.add_argument("--config", required=True)
     p.add_argument("--manifest", required=True)
-    p.add_argument("--student-init-checkpoint", default=None)
+    p.add_argument("--student-init-checkpoint", required=True)
     p.add_argument("--critic-checkpoint", default=None)
     p.add_argument("--student-kind", default="multiscale")
     p.add_argument("--student-width", type=int, default=16)
@@ -110,13 +116,22 @@ def main():
         raise ValueError("--rc-ramp must satisfy 0 <= r <= 1")
 
     cfg = yaml.safe_load(Path(args.config).read_text())
+    errors = audit(
+        args.manifest,
+        normal_policy="train" if args.normal_fraction > 0 else "none",
+        resize_size=int(cfg["image_size"]),
+    )
+    if errors:
+        raise RuntimeError("G0 FAIL:\n" + "\n".join(errors))
+
     seed = int(cfg["seed"])
     seed_all(seed)
     device = torch.device(cfg["device"])
     student = make_student(args.student_kind, args.student_width).to(device)
     _load_student(student, args.student_init_checkpoint)
-    student.train()
+    student.eval()
     critic = _load_critic(args.critic_checkpoint, args.critic_width, device)
+    corruption_gen = make_generator(device, seed + 20001)
 
     loader, sampler = make_train_loader(
         args.manifest,
@@ -131,10 +146,11 @@ def main():
 
     params = [p for p in student.parameters() if p.requires_grad]
     rows = []
-    for batch_idx, (x, y) in enumerate(loader):
+    for batch_idx, (x, y, is_normal) in enumerate(loader):
         if batch_idx >= args.batches:
             break
         x, y = x.to(device), y.to(device)
+        is_normal = is_normal.to(device, dtype=torch.bool)
         logits = student(x)
         seg = segmentation_loss(logits, y)
         aosk = oriented_consistency_loss(logits, x, y)
@@ -143,7 +159,9 @@ def main():
         ex = None
         if critic is not None:
             pred_mask = logits.sigmoid()
-            wrong_mask, _ = make_corrupted_mask(y)
+            wrong_mask, _ = make_corrupted_mask(
+                y, true_normal=is_normal, generator=corruption_gen
+            )
             with torch.no_grad():
                 gt_out = critic(x, y)
                 corrupted_out = critic(x, wrong_mask)
@@ -202,7 +220,11 @@ def main():
     summary = {
         "batches": len(rows),
         "seed": seed,
-        "normal_fraction": args.normal_fraction,
+        "student_mode": "eval-fixed-state",
+        "normal_fraction_requested": args.normal_fraction,
+        "normal_fraction_realized": (
+            sampler.realized_normal_fraction if sampler is not None else 0.0
+        ),
         "lambda_oasis": args.lambda_oasis,
         "lambda_aosk": args.lambda_aosk,
         "rc_ramp": args.rc_ramp,
