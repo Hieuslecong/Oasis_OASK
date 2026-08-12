@@ -1,18 +1,26 @@
 #!/usr/bin/env python3
-"""Append true-normal RGB rows to a canonical crack manifest without changing val/test.
+"""Append true-normal RGB rows without changing canonical val/test.
 
-Example:
+Parent/session identity must be used when an auxiliary normal validation split is
+created. By default all external normals stay in ``normal_train``. To create a
+normal_val split, provide ``--lineage-regex`` with a capturing group that maps
+patch filenames/relative paths back to their strongest available parent.
+
+Example (pattern depends on the actual archive naming convention):
 
 python scripts/add_normal_rgb_to_manifest.py \
   --canonical-manifest /path/to/manifest_final.jsonl \
-  --normal-root /hdd1/hieulc/Oasis_AOSK/datasets/structural_defects/Walls/Non-cracked \
-  --out /hdd1/hieulc/Oasis_AOSK/experiments/normal_rgb_v1/manifest_with_normal.jsonl
+  --normal-root /path/to/Walls/Non-cracked \
+  --lineage-regex '^(parent_[^_]+)' \
+  --train-ratio 0.90 \
+  --out /path/to/manifest_with_normal.jsonl
 """
 import argparse
 import hashlib
 import json
 import random
-from collections import Counter
+import re
+from collections import Counter, defaultdict
 from pathlib import Path
 
 from PIL import Image
@@ -39,8 +47,30 @@ def canonical_rows_hash(rows):
 def list_images(root):
     root = Path(root)
     return sorted(
-        p for p in root.rglob("*") if p.is_file() and p.suffix.lower() in IMAGE_EXTENSIONS
+        p
+        for p in root.rglob("*")
+        if p.is_file() and p.suffix.lower() in IMAGE_EXTENSIONS
     )
+
+
+def lineage_key(image, root, pattern, allow_file_level):
+    rel = image.relative_to(root).as_posix()
+    if pattern is None:
+        if not allow_file_level:
+            return None
+        return rel
+    match = pattern.search(rel)
+    if not match:
+        raise ValueError(
+            f"lineage regex did not match {rel!r}; refuse partial lineage coverage"
+        )
+    if match.lastindex:
+        key = match.group(1)
+    else:
+        key = match.group(0)
+    if not key:
+        raise ValueError(f"empty lineage key for {rel!r}")
+    return key
 
 
 def main():
@@ -49,13 +79,37 @@ def main():
     p.add_argument("--normal-root", required=True)
     p.add_argument("--out", required=True)
     p.add_argument("--source-id", default="structural_defects_walls")
-    p.add_argument("--train-ratio", type=float, default=0.90)
+    p.add_argument(
+        "--train-ratio",
+        type=float,
+        default=1.0,
+        help="fraction of lineage groups assigned to normal_train; default 1.0",
+    )
     p.add_argument("--seed", type=int, default=1337)
+    p.add_argument(
+        "--lineage-regex",
+        default=None,
+        help="regex over relative path; first capturing group is parent lineage",
+    )
+    p.add_argument(
+        "--allow-file-level-lineage",
+        action="store_true",
+        help="debug-only escape hatch; each file becomes its own lineage",
+    )
     args = p.parse_args()
 
-    if not 0.0 < args.train_ratio < 1.0:
-        raise ValueError("--train-ratio must satisfy 0 < ratio < 1")
+    if not 0.0 < args.train_ratio <= 1.0:
+        raise ValueError("--train-ratio must satisfy 0 < ratio <= 1")
+    if args.train_ratio < 1.0 and not args.lineage_regex:
+        raise ValueError(
+            "creating normal_val requires --lineage-regex so derived patches from "
+            "the same parent cannot cross normal_train/normal_val. Use "
+            "--train-ratio 1.0 when parent identity is unavailable."
+        )
+    if args.lineage_regex and args.allow_file_level_lineage:
+        raise ValueError("choose --lineage-regex or --allow-file-level-lineage, not both")
 
+    pattern = re.compile(args.lineage_regex) if args.lineage_regex else None
     canonical_path = Path(args.canonical_manifest)
     canonical = [
         json.loads(line)
@@ -80,29 +134,54 @@ def main():
         except Exception as exc:
             rejected.append({"image": str(image), "reason": str(exc)})
 
+    # If there is no parent identity and no explicit file-level escape hatch,
+    # keep all normals in train. This is safe and makes the limitation explicit.
+    if pattern is None and not args.allow_file_level_lineage:
+        groups = {"UNRESOLVED_ALL_NORMALS": list(accepted)}
+        lineage_policy = "unresolved-all-train"
+    else:
+        groups = defaultdict(list)
+        for image in accepted:
+            key = lineage_key(image, root, pattern, args.allow_file_level_lineage)
+            groups[key].append(image)
+        groups = dict(groups)
+        lineage_policy = "regex-parent" if pattern is not None else "file-level-debug"
+
+    group_keys = sorted(groups)
     rng = random.Random(args.seed)
-    accepted = list(accepted)
-    rng.shuffle(accepted)
-    cut = max(1, min(len(accepted) - 1, int(round(len(accepted) * args.train_ratio))))
-    train_images = accepted[:cut]
-    val_images = accepted[cut:]
+    rng.shuffle(group_keys)
 
-    def row_for(image, split):
-        rel = image.relative_to(root).as_posix()
-        return {
-            "image": str(image),
-            "mask": None,
-            "split": split,
-            "source_id": args.source_id,
-            # Split is intentionally excluded from lineage identity.
-            "lineage_id": f"{args.source_id}::{rel}",
-            "is_normal": True,
-        }
+    if args.train_ratio >= 1.0:
+        train_groups = set(group_keys)
+        val_groups = set()
+    else:
+        if len(group_keys) < 2:
+            raise RuntimeError("need at least two independent lineage groups for normal_val")
+        cut = max(1, min(len(group_keys) - 1, int(round(len(group_keys) * args.train_ratio))))
+        train_groups = set(group_keys[:cut])
+        val_groups = set(group_keys[cut:])
 
-    normal_rows = [row_for(x, "normal_train") for x in train_images]
-    normal_rows += [row_for(x, "normal_val") for x in val_images]
-    merged = canonical + normal_rows
+    rows = []
+    train_images = []
+    val_images = []
+    for key in sorted(groups):
+        split = "normal_train" if key in train_groups else "normal_val"
+        for image in sorted(groups[key]):
+            rel = image.relative_to(root).as_posix()
+            rows.append(
+                {
+                    "image": str(image),
+                    "mask": None,
+                    "split": split,
+                    "source_id": args.source_id,
+                    "lineage_id": f"{args.source_id}::{key}",
+                    "lineage_policy": lineage_policy,
+                    "is_normal": True,
+                }
+            )
+            (train_images if split == "normal_train" else val_images).append(image)
 
+    merged = canonical + rows
     after_val = [r for r in merged if r.get("split") == "val"]
     after_test = [r for r in merged if r.get("split") == "test"]
     if canonical_rows_hash(before_val) != canonical_rows_hash(after_val):
@@ -121,6 +200,11 @@ def main():
         "normal_candidates": len(candidates),
         "normal_accepted": len(accepted),
         "normal_rejected": rejected,
+        "lineage_policy": lineage_policy,
+        "lineage_regex": args.lineage_regex,
+        "lineage_groups": len(groups),
+        "normal_train_groups": len(train_groups),
+        "normal_val_groups": len(val_groups),
         "normal_train": len(train_images),
         "normal_val": len(val_images),
         "seed": args.seed,
