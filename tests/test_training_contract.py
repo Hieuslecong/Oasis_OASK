@@ -1,3 +1,5 @@
+import hashlib
+
 import torch
 
 from oasis_cycle_aosk.aosk import oriented_consistency_loss
@@ -84,7 +86,12 @@ def test_s1_equals_s3_when_lambda_aosk_zero():
 
 def test_sha256_file_records_exact_init_bytes(tmp_path):
     path = tmp_path / "init.pt"
-    path.write_bytes(b"canonical-student-init")
-    assert sha256_file(path) == sha256_file(path)
-    path.write_bytes(b"canonical-student-init-changed")
-    assert sha256_file(path) != sha256_file(tmp_path / "missing.pt") if False else True
+    first = b"canonical-student-init"
+    second = b"canonical-student-init-changed"
+    path.write_bytes(first)
+    first_sha = sha256_file(path)
+    assert first_sha == hashlib.sha256(first).hexdigest()
+    path.write_bytes(second)
+    second_sha = sha256_file(path)
+    assert second_sha == hashlib.sha256(second).hexdigest()
+    assert first_sha != second_sha
