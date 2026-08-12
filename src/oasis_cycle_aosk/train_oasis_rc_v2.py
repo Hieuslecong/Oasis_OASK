@@ -294,6 +294,10 @@ def main():
     p.add_argument("--warmup", type=int, default=4); p.add_argument("--ramp-epochs", type=int, default=3)
     p.add_argument("--lambda-aosk", type=float, default=0.01,
                    help="AOSK oriented-consistency weight (aosk / aosk_connected modes)")
+    p.add_argument("--lambda-oasis", type=float, default=None,
+                   help="OASIS relational-consistency weight (connected / aosk_connected modes)")
+    p.add_argument("--critic-width", type=int, default=None,
+                   help="Relational critic width")
     p.add_argument("--pair-weight", type=float, default=0.25,
                    help="Pair-consistency weight while training the critic")
     p.add_argument("--student-pair-weight", type=float, default=0.25,
@@ -304,6 +308,10 @@ def main():
     p.add_argument("--student-kind", choices=("multiscale", "lightweight", "mobilenetv3", "dsunet", "fastscnn", "bisenet"), default="multiscale")
     p.add_argument("--critic-checkpoint", default=None)
     args = p.parse_args(); cfg = yaml.safe_load(Path(args.config).read_text())
+    if args.lambda_oasis is None:
+        args.lambda_oasis = float(cfg.get("lambda_oasis", 0.001))
+    if args.critic_width is None:
+        args.critic_width = int(cfg.get("critic_width", 8))
     errors = audit(args.manifest, test_split=args.test_split, require_normal=args.require_normal)
     if errors: raise RuntimeError("G0 FAIL:\n" + "\n".join(errors))
     seed_all(int(cfg["seed"])); device = torch.device(cfg["device"]); out = Path(args.out); out.mkdir(parents=True, exist_ok=True)
@@ -329,3 +337,4 @@ def main():
 
 
 if __name__ == "__main__": main()
+
