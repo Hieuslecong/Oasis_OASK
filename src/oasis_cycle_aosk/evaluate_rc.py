@@ -1,5 +1,6 @@
 """Validation/test evaluation for RGB-only deployment checkpoints."""
 import argparse
+import hashlib
 import json
 from pathlib import Path
 
@@ -18,12 +19,21 @@ from .models import (
 )
 
 
+def _sha256_file(path):
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
 @torch.no_grad()
-def evaluate(model, loader, threshold):
+def evaluate(model, loader, threshold, device):
     model.eval()
     tp = fp = fn = 0.0
     normal = []
     for x, y in loader:
+        x, y = x.to(device), y.to(device)
         pred = (model(x).sigmoid() >= threshold).float()
         tp += float((pred * y).sum())
         fp += float((pred * (1 - y)).sum())
@@ -39,7 +49,9 @@ def evaluate(model, loader, threshold):
         "dice_f1": 2 * tp / (2 * tp + fp + fn + 1e-8),
         "iou": tp / (tp + fp + fn + 1e-8),
         "normal_fp_pixels_mean": float(np.mean(normal)) if normal else None,
+        "normal_fp_pixels_median": float(np.median(normal)) if normal else None,
         "normal_fp_images": int(sum(v > 0 for v in normal)),
+        "normal_image_count": len(normal),
         "threshold": threshold,
     }
 
@@ -66,13 +78,30 @@ def main():
     p.add_argument("--size", type=int, default=None)
     p.add_argument("--allow-resolution-ablation", action="store_true")
     p.add_argument("--threshold", type=float, default=None)
+    p.add_argument("--device", default="cpu")
     p.add_argument("--out", required=True)
     a = p.parse_args()
 
+    device = torch.device(a.device)
+    if device.type == "cuda" and not torch.cuda.is_available():
+        raise RuntimeError("CUDA evaluation requested but CUDA is unavailable")
+
     ck = torch.load(a.checkpoint, map_location="cpu", weights_only=False)
+    forbidden = {"critic", "aosk", "generator", "discriminator"}.intersection(ck)
+    if forbidden:
+        raise ValueError(
+            f"deployment checkpoint contains training-only state: {sorted(forbidden)}"
+        )
+    if "student" not in ck:
+        raise ValueError("checkpoint does not contain student state")
+
     kind = ck.get("student_kind", "multiscale")
     width = int(ck.get("student_width", 16))
-    trained_size = int(ck.get("config", {}).get("image_size", 128))
+    trained_size = int(
+        ck.get("effective_config", {}).get(
+            "image_size", ck.get("config", {}).get("image_size", 128)
+        )
+    )
     size = trained_size if a.size is None else int(a.size)
     if size != trained_size and not a.allow_resolution_ablation:
         raise ValueError(
@@ -80,7 +109,7 @@ def main():
             "pass --allow-resolution-ablation only for an explicit ablation"
         )
 
-    model = _build_student(kind, width)
+    model = _build_student(kind, width).to(device)
     model.load_state_dict(ck["student"])
     model.eval()
     threshold = (
@@ -94,13 +123,21 @@ def main():
         shuffle=False,
         num_workers=0,
     )
-    result = evaluate(model, loader, threshold)
-    result["split"] = a.split
-    result["checkpoint_mode"] = ck.get("mode")
-    result["student_kind"] = kind
-    result["image_size"] = size
-    result["trained_image_size"] = trained_size
-    result["inference_contract"] = ck.get("inference_contract", "RGB-only student")
+    result = evaluate(model, loader, threshold, device)
+    result.update(
+        {
+            "split": a.split,
+            "checkpoint_mode": ck.get("mode"),
+            "checkpoint_sha256": _sha256_file(a.checkpoint),
+            "student_kind": kind,
+            "image_size": size,
+            "trained_image_size": trained_size,
+            "device": str(device),
+            "inference_contract": ck.get(
+                "inference_contract", "RGB-only student"
+            ),
+        }
+    )
     Path(a.out).write_text(json.dumps(result, indent=2))
     print(json.dumps(result, indent=2))
 
