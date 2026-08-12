@@ -1,6 +1,8 @@
 import copy
 import hashlib
+from types import SimpleNamespace
 
+import pytest
 import torch
 
 from oasis_cycle_aosk.aosk import oriented_consistency_loss
@@ -9,9 +11,11 @@ from oasis_cycle_aosk.models import MultiScaleLightweightSegmenter, RelationalOA
 from oasis_cycle_aosk.train_oasis_rc_v2 import (
     augment,
     build_targets,
+    load_student_init,
     make_corrupted_mask,
     make_generator,
     sha256_file,
+    validate_loaded_critic,
 )
 
 
@@ -169,6 +173,52 @@ def test_two_step_control_matches_connected_when_rc_weight_zero():
     ):
         assert name_c == name_r
         assert torch.equal(tensor_c, tensor_r), name_c
+
+
+def test_student_init_seed_mismatch_is_rejected(tmp_path):
+    student = MultiScaleLightweightSegmenter(width=4)
+    setattr(student, "_oasis_width", 4)
+    path = tmp_path / "init.pt"
+    torch.save(
+        {
+            "student": student.state_dict(),
+            "student_kind": "multiscale",
+            "student_width": 4,
+            "seed": 1337,
+        },
+        path,
+    )
+    with pytest.raises(ValueError, match="seed mismatch"):
+        load_student_init(student, path, expected_seed=2027)
+
+
+def test_critic_provenance_mismatch_is_rejected(tmp_path):
+    manifest = tmp_path / "manifest.jsonl"
+    manifest.write_text("canonical-manifest-bytes\n")
+    args = SimpleNamespace(
+        manifest=str(manifest),
+        normal_fraction=0.25,
+        normal_critic_weight=1.0,
+    )
+    cfg = {"seed": 1337, "image_size": 256}
+    saved = {
+        "critic": {},
+        "config": {"seed": 1337, "image_size": 256},
+        "manifest_file_sha256": sha256_file(manifest),
+        "normal_fraction": 0.25,
+        "normal_critic_weight": 1.0,
+    }
+    validate_loaded_critic(saved, args, cfg)
+
+    bad = dict(saved)
+    bad["normal_fraction"] = 0.50
+    with pytest.raises(ValueError, match="normal_fraction"):
+        validate_loaded_critic(bad, args, cfg)
+
+    bad = dict(saved)
+    bad["manifest_file_sha256"] = "0" * 64
+    with pytest.raises(ValueError, match="manifest SHA256"):
+        validate_loaded_critic(bad, args, cfg)
 
 
 def test_sha256_file_records_exact_init_bytes(tmp_path):
