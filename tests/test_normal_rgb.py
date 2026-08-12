@@ -114,6 +114,15 @@ def test_mixed_sampler_has_fixed_composition_and_is_deterministic():
         assert crack == 6
 
 
+def test_normal_fraction_does_not_increase_optimizer_steps_per_epoch():
+    # Crack-only baseline with 24 samples, batch 8 has exactly 3 updates.
+    mixed = MixedBatchSampler(24, 100, batch_size=8, normal_fraction=0.25, seed=1)
+    assert len(mixed) == 3
+    assert mixed.samples_per_epoch == 24
+    assert mixed.crack_samples_per_epoch == 18
+    assert mixed.normal_samples_per_epoch == 6
+
+
 def test_mixed_sampler_rejects_requested_fraction_that_rounds_to_zero():
     with pytest.raises(ValueError, match="too small"):
         MixedBatchSampler(12, 20, batch_size=4, normal_fraction=0.10, seed=1337)
