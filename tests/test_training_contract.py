@@ -8,6 +8,7 @@ from oasis_cycle_aosk.losses_v2 import segmentation_loss, oasis_rc_student_loss_
 from oasis_cycle_aosk.models import MultiScaleLightweightSegmenter, RelationalOASISRC
 from oasis_cycle_aosk.train_oasis_rc_v2 import (
     augment,
+    build_targets,
     make_corrupted_mask,
     make_generator,
     sha256_file,
@@ -112,6 +113,14 @@ def test_rc_corruption_rng_does_not_change_augmentation_sequence():
     assert torch.equal(c1[1], r1[1])
     assert torch.equal(c2[0], r2[0])
     assert torch.equal(c2[1], r2[1])
+
+
+def test_noop_corruption_is_pair_valid_not_forced_invalid():
+    mask = torch.zeros(2, 1, 8, 8)
+    invalid = torch.zeros_like(mask)
+    _, mismatch, pair_valid = build_targets(mask, invalid)
+    assert float(mismatch.sum()) == 0.0
+    assert torch.equal(pair_valid, torch.ones_like(pair_valid))
 
 
 def test_two_step_control_matches_connected_when_rc_weight_zero():
