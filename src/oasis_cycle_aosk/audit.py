@@ -4,7 +4,7 @@ from PIL import Image
 
 REQUIRED = {"image", "split", "source_id", "lineage_id", "is_normal"}
 
-def audit(path, allow_debug_no_test_normals=False, test_split="test", require_source_disjoint=False):
+def audit(path, allow_debug_no_test_normals=False, test_split="test", require_source_disjoint=False, require_normal=True):
     rows = [json.loads(x) for x in Path(path).read_text().splitlines() if x.strip()]
     errors, lineage_splits, source_splits, image_seen = [], {}, {}, set()
     for i, r in enumerate(rows):
@@ -27,7 +27,7 @@ def audit(path, allow_debug_no_test_normals=False, test_split="test", require_so
     required_splits = ("train", "val", test_split)
     for split in required_splits:
         is_test = split == test_split
-        if not any(r.get("split") == split and bool(r.get("is_normal")) for r in rows) and not (is_test and allow_debug_no_test_normals): errors.append(f"{split}: no normal sample")
+        if not any(r.get("split") == split and bool(r.get("is_normal")) for r in rows) and not (is_test and allow_debug_no_test_normals) and require_normal: errors.append(f"{split}: no normal sample")
     return errors
 
 def main():

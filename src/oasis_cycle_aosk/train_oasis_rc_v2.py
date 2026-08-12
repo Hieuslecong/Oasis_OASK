@@ -286,7 +286,9 @@ def main():
     p = argparse.ArgumentParser()
     p.add_argument("--config", required=True); p.add_argument("--manifest", required=True); p.add_argument("--out", required=True)
     p.add_argument("--mode", choices=("control", "critic", "connected", "aosk", "aosk_connected"), required=True)
-    p.add_argument("--test-split", default="test_debug")
+    p.add_argument("--test-split", default="test")
+    p.add_argument("--require-normal", action="store_true",
+                   help="Require a no-crack(normal) sample per split (skip for crack-only datasets)")
     p.add_argument("--critic-epochs", type=int, default=10); p.add_argument("--epochs", type=int, default=12)
     p.add_argument("--warmup", type=int, default=4); p.add_argument("--ramp-epochs", type=int, default=3)
     p.add_argument("--lambda-aosk", type=float, default=0.01,
@@ -301,7 +303,7 @@ def main():
     p.add_argument("--student-kind", choices=("multiscale", "lightweight", "mobilenetv3", "dsunet", "fastscnn", "bisenet"), default="multiscale")
     p.add_argument("--critic-checkpoint", default=None)
     args = p.parse_args(); cfg = yaml.safe_load(Path(args.config).read_text())
-    errors = audit(args.manifest, test_split=args.test_split)
+    errors = audit(args.manifest, test_split=args.test_split, require_normal=args.require_normal)
     if errors: raise RuntimeError("G0 FAIL:\n" + "\n".join(errors))
     seed_all(int(cfg["seed"])); device = torch.device(cfg["device"]); out = Path(args.out); out.mkdir(parents=True, exist_ok=True)
     critic = None
