@@ -6,15 +6,15 @@ from torch.utils.data import Sampler
 
 
 class MixedBatchSampler(Sampler):
-    """Yield fixed-composition batches from crack and normal datasets.
+    """Yield fixed-composition batches from crack and true-normal datasets.
 
-    The concatenated dataset is expected to be ordered as:
+    The concatenated dataset is ordered as ``[crack rows][normal rows]``.
 
-        [crack dataset rows][normal dataset rows]
-
-    Each epoch exposes every crack sample approximately once (subject to the
-    final partial cycle) while cycling through the normal pool as needed. The
-    composition is deterministic for a given seed and epoch.
+    Crucially, the number of optimizer steps per epoch is anchored to the
+    crack-only baseline ``ceil(crack_count / batch_size)``. Increasing the
+    normal fraction therefore replaces part of each fixed-size batch instead of
+    silently making an epoch longer. This removes training-budget confounding
+    from N0-vs-N25 normal-supervision ablations.
     """
 
     def __init__(
@@ -52,7 +52,11 @@ class MixedBatchSampler(Sampler):
             raise ValueError("normal_fraction > 0 requires normal samples")
 
         self.realized_normal_fraction = self.normal_per_batch / self.batch_size
-        self.steps = int(math.ceil(self.crack_count / self.crack_per_batch))
+        # Same update budget as a crack-only DataLoader at this batch size.
+        self.steps = int(math.ceil(self.crack_count / self.batch_size))
+        self.samples_per_epoch = self.steps * self.batch_size
+        self.crack_samples_per_epoch = self.steps * self.crack_per_batch
+        self.normal_samples_per_epoch = self.steps * self.normal_per_batch
 
     def set_epoch(self, epoch):
         self.epoch = int(epoch)
