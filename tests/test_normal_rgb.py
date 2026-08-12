@@ -1,5 +1,6 @@
 import json
 
+import pytest
 import torch
 from PIL import Image
 
@@ -39,10 +40,13 @@ def test_true_normal_row_produces_virtual_zero_mask(tmp_path):
         )
         + "\n"
     )
-    x, y = ManifestDataset(manifest, "normal_train", 16)[0]
+    x, y, is_normal = ManifestDataset(
+        manifest, "normal_train", 16, return_is_normal=True
+    )[0]
     assert x.shape == (3, 16, 16)
     assert y.shape == (1, 16, 16)
     assert float(y.sum()) == 0.0
+    assert bool(is_normal) is True
 
 
 def test_crack_row_missing_mask_is_not_silently_normal(tmp_path):
@@ -63,12 +67,36 @@ def test_crack_row_missing_mask_is_not_silently_normal(tmp_path):
         + "\n"
     )
     ds = ManifestDataset(manifest, "train", 16)
-    try:
+    with pytest.raises(ValueError, match="missing mask"):
         ds[0]
-    except ValueError as exc:
-        assert "missing mask" in str(exc)
-    else:
-        raise AssertionError("crack row without mask must fail")
+
+
+def test_explicit_crack_identity_survives_empty_resized_tensor(tmp_path):
+    image = tmp_path / "crack.png"
+    mask = tmp_path / "mask.png"
+    _save_rgb(image, size=(8, 8))
+    im = Image.new("L", (8, 8), color=0)
+    im.putpixel((0, 0), 255)
+    im.save(mask)
+    manifest = tmp_path / "m.jsonl"
+    manifest.write_text(
+        json.dumps(
+            {
+                "image": str(image),
+                "mask": str(mask),
+                "split": "train",
+                "source_id": "crack",
+                "lineage_id": "crack::tiny",
+                "is_normal": False,
+            }
+        )
+        + "\n"
+    )
+    _, y, is_normal = ManifestDataset(
+        manifest, "train", 1, return_is_normal=True
+    )[0]
+    assert float(y.sum()) == 0.0
+    assert bool(is_normal) is False
 
 
 def test_mixed_sampler_has_fixed_composition_and_is_deterministic():
@@ -78,11 +106,17 @@ def test_mixed_sampler_has_fixed_composition_and_is_deterministic():
     b2 = list(s2)
     assert b1 == b2
     assert b1
+    assert s1.realized_normal_fraction == 0.25
     for batch in b1:
         normal = sum(i >= 12 for i in batch)
         crack = sum(i < 12 for i in batch)
         assert normal == 2
         assert crack == 6
+
+
+def test_mixed_sampler_rejects_requested_fraction_that_rounds_to_zero():
+    with pytest.raises(ValueError, match="too small"):
+        MixedBatchSampler(12, 20, batch_size=4, normal_fraction=0.10, seed=1337)
 
 
 def test_audit_rejects_split_qualified_lineage_and_cross_split_duplicate(tmp_path):
