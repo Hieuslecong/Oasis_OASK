@@ -1,0 +1,11 @@
+{
+  "precision": 0.5795910916382264,
+  "recall": 0.7917705735641103,
+  "dice_f1": 0.6692664418205424,
+  "iou": 0.5029304609527911,
+  "normal_fp_pixels_mean": 0.0,
+  "normal_fp_images": 0,
+  "threshold": 0.5,
+  "split": "test_debug",
+  "checkpoint_mode": "connected"
+}

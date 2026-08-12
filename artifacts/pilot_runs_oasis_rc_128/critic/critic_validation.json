@@ -1,0 +1,7 @@
+{
+  "semantic_accuracy": 0.8935770670572735,
+  "crack_recall": 0.6126890069466564,
+  "invalid_recall": 0.8129984910539605,
+  "pair_accuracy": 0.6333333331222222,
+  "mismatch_auc": 0.009135723386886665
+}

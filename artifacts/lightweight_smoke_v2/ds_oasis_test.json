@@ -1,0 +1,12 @@
+{
+  "precision": 0.026014618195794377,
+  "recall": 0.13491271820415235,
+  "dice_f1": 0.043618479400127544,
+  "iou": 0.022295487327417145,
+  "normal_fp_pixels_mean": 1719.2,
+  "normal_fp_images": 5,
+  "threshold": 0.44999999999999996,
+  "split": "test_debug",
+  "checkpoint_mode": "connected",
+  "student_kind": "dsunet"
+}

@@ -1,0 +1,17 @@
+seed: 1337
+image_size: 128
+batch_size: 4
+epochs: 12
+device: cpu
+num_workers: 0
+threshold: 0.5
+loss:
+  dice: 1.0
+  bce: 1.0
+  distill: 0.05
+  cycle: 2.0
+  identity: 1.0
+  adversarial: 0.05
+  aosk: 0.02
+  synthetic_student: 0.10
+  critic: 0.03

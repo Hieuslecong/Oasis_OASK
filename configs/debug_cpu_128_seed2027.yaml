@@ -1,0 +1,10 @@
+seed: 2027
+image_size: 128
+batch_size: 4
+epochs: 12
+device: cpu
+num_workers: 0
+threshold: 0.5
+loss:
+  dice: 1.0
+  bce: 1.0

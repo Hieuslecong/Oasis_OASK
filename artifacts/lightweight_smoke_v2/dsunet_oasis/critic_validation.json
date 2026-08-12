@@ -1,0 +1,14 @@
+{
+  "semantic_accuracy": 0.9673461914062303,
+  "valid_crack_recall": 0.9746723343943063,
+  "invalid_recall": 0.9652902128889314,
+  "pair_accuracy": 0.6666666664444444,
+  "mismatch_auc": 0.9929205177543535,
+  "rgb_mismatch_recall": 0.6666666662222221,
+  "mask_mismatch_recall": 0.6666666662222221,
+  "valid_pair_score": 0.46357911427815757,
+  "rgb_pair_score": 0.34373345971107483,
+  "mask_pair_score": 0.3409956326087316,
+  "rgb_pair_drop": 0.11984565456708274,
+  "mask_pair_drop": 0.12258348166942595
+}
