@@ -103,14 +103,17 @@ def configure_determinism(enabled):
     enabled = bool(enabled)
     if hasattr(torch.backends, "cudnn"):
         torch.backends.cudnn.deterministic = enabled
-        torch.backends.cudnn.benchmark = False if enabled else torch.backends.cudnn.benchmark
+        if enabled:
+            torch.backends.cudnn.benchmark = False
         if hasattr(torch.backends.cudnn, "allow_tf32") and enabled:
             torch.backends.cudnn.allow_tf32 = False
     if hasattr(torch.backends, "cuda") and hasattr(torch.backends.cuda, "matmul"):
         if enabled:
             torch.backends.cuda.matmul.allow_tf32 = False
     if enabled:
-        torch.use_deterministic_algorithms(True, warn_only=True)
+        # Controlled scientific runs must fail rather than silently use an
+        # operation PyTorch identifies as nondeterministic.
+        torch.use_deterministic_algorithms(True, warn_only=False)
 
 
 def make_generator(device, seed):
@@ -157,7 +160,10 @@ def make_corrupted_mask(mask, true_normal=None, generator=None):
     shifted = shift_zero(mask, dx=3)
     dilated = F.max_pool2d(mask, 5, 1, 2)
     eroded = -F.max_pool2d(-mask, 5, 1, 2)
-    keep = (F.max_pool2d((_rand_like(mask, generator) > 0.985).float(), 9, 1, 4) < 0.5).float()
+    keep = (
+        F.max_pool2d((_rand_like(mask, generator) > 0.985).float(), 9, 1, 4)
+        < 0.5
+    ).float()
     broken = mask * keep
     noise = (_rand_like(mask, generator) > 0.992).float()
     blob = (F.max_pool2d(noise, 11, 1, 5) > 0.5).float()
@@ -344,7 +350,9 @@ def normal_fp_diagnostics(model, loader, device, threshold):
         pred = (model(x).sigmoid() >= threshold).float()
         flat = pred.flatten(1).sum(1).cpu().numpy()
         pixels.extend(float(v) for v in flat)
-        ratios.extend(float(v) / float(pred.shape[-2] * pred.shape[-1]) for v in flat)
+        ratios.extend(
+            float(v) / float(pred.shape[-2] * pred.shape[-1]) for v in flat
+        )
     if not pixels:
         raise RuntimeError("normal diagnostic split is empty")
     arr = np.asarray(pixels, dtype=np.float64)
@@ -395,11 +403,11 @@ def critic_metrics(critic, loader, device):
         crack_rows = y.flatten(1).sum(1) > 0
         wrong, invalid = make_corrupted_mask(y, generator=generator)
         pairs = [
-            ("valid", x, y, torch.zeros_like(y), torch.ones(x.size(0), 1, device=device)),
-            ("wrong", x, wrong, invalid, torch.zeros(x.size(0), 1, device=device)),
+            ("valid", x, y, torch.zeros_like(y)),
+            ("wrong", x, wrong, invalid),
         ]
-        for pair_kind, image, mask, inv, pv in pairs:
-            sem, mm, _ = build_targets(mask, inv)
+        for pair_kind, image, mask, inv in pairs:
+            sem, mm, pv = build_targets(mask, inv)
             out = critic(image, mask)
             pred = out["semantic"].argmax(1)
             sem_correct += float((pred == sem).sum())
@@ -407,14 +415,18 @@ def critic_metrics(critic, loader, device):
             if pair_kind == "valid":
                 crack_tp += float(((pred == 1) & (sem == 1)).sum())
                 crack_fn += float(((pred != 1) & (sem == 1)).sum())
-                valid_pair_scores.extend(out["pair"].sigmoid().flatten().cpu().tolist())
+                valid_pair_scores.extend(
+                    out["pair"].sigmoid().flatten().cpu().tolist()
+                )
             else:
                 invalid_tp += float(((pred == 2) & (sem == 2)).sum())
                 invalid_fn += float(((pred != 2) & (sem == 2)).sum())
             pp = (out["pair"].sigmoid() >= 0.5).float()
             pair_correct += float((pp == pv).sum())
             pair_total += float(pv.numel())
-            mismatch_scores.extend(out["mismatch"].sigmoid().flatten().cpu().tolist())
+            mismatch_scores.extend(
+                out["mismatch"].sigmoid().flatten().cpu().tolist()
+            )
             mismatch_labels.extend(mm.flatten().cpu().tolist())
 
         if crack_rows.any():
@@ -446,7 +458,9 @@ def critic_metrics(critic, loader, device):
         if pos == 0 or neg == 0:
             return None
         rank = np.arange(1, len(yy) + 1)
-        return float((rank[yy == 1].sum() - pos * (pos + 1) / 2) / (pos * neg))
+        return float(
+            (rank[yy == 1].sum() - pos * (pos + 1) / 2) / (pos * neg)
+        )
 
     def mean_or_none(values):
         return float(np.mean(values)) if values else None
@@ -517,7 +531,11 @@ def train_critic(args, cfg, device, out):
                     critic(x, y), sem, mm, pv, pair_weight=args.pair_weight
                 ),
                 oasis_rc_critic_loss(
-                    critic(x, wrong), sem_w, mm_w, pv_w, pair_weight=args.pair_weight
+                    critic(x, wrong),
+                    sem_w,
+                    mm_w,
+                    pv_w,
+                    pair_weight=args.pair_weight,
                 ),
             ]
 
@@ -615,7 +633,9 @@ def train_critic(args, cfg, device, out):
     if args.normal_fraction > 0 and not any(
         r["critic_normal_samples_seen"] > 0 for r in history
     ):
-        raise RuntimeError("normal supervision requested but critic saw zero normal samples")
+        raise RuntimeError(
+            "normal supervision requested but critic saw zero normal samples"
+        )
 
     critic_path = out / "critic.pt"
     torch.save(
@@ -842,7 +862,7 @@ def train_student(args, cfg, device, out, critic=None, aosk=False):
         "effective_config": effective_config,
         "mode": args.mode,
         "method_version": "OASIS-RC-v2-reconstructed",
-        "implementation_version": "2.3.0-fairness-gates",
+        "implementation_version": "2.3.1-fairness-gates",
         "lambda_oasis": args.lambda_oasis,
         "lambda_aosk": args.lambda_aosk,
         "normal_fraction": args.normal_fraction,
