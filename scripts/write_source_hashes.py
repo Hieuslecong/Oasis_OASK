@@ -13,8 +13,12 @@ DEFAULTS = [
     "src/oasis_cycle_aosk/samplers.py",
     "src/oasis_cycle_aosk/train_oasis_rc_v2.py",
     "src/oasis_cycle_aosk/evaluate_rc.py",
+    "scripts/audit_normal_rgb_source.py",
     "scripts/add_normal_rgb_to_manifest.py",
     "scripts/diagnose_aux_gradients.py",
+    "scripts/create_student_init.py",
+    "scripts/run_smoke.sh",
+    "scripts/run_three_seeds.sh",
 ]
 
 
