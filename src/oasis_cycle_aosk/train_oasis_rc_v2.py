@@ -16,6 +16,7 @@ import yaml
 from torch.utils.data import DataLoader
 
 from .audit import audit
+from .aosk import oriented_consistency_loss
 from .losses_v2 import segmentation_loss, oasis_rc_critic_loss, oasis_rc_student_loss_v2
 from .models import BiSeNetTiny, DSUNetLite, FastSCNNLite, LightweightSegmenter, MobileNetV3SmallSegmenter, MultiScaleLightweightSegmenter, RelationalOASISRC
 from .data import ManifestDataset
@@ -225,7 +226,7 @@ def train_critic(args, cfg, device, out):
     return critic
 
 
-def train_student(args, cfg, device, out, critic=None):
+def train_student(args, cfg, device, out, critic=None, aosk=False):
     # Critic construction/training must not change the student's initialization
     # or augmentation RNG stream.  This is required for paired control runs.
     seed_all(int(cfg["seed"]))
@@ -256,6 +257,13 @@ def train_student(args, cfg, device, out, critic=None):
                 )
                 ramp = min(1.0, (epoch - args.warmup + 1) / max(1, args.ramp_epochs))
                 loss = loss + args.lambda_oasis * ramp * rc
+            if aosk and epoch >= args.warmup:
+                # Training-only oriented consistency regularizer along the
+                # crack band; never imported by the RGB-only deployment path.
+                cons = oriented_consistency_loss(logits, x, y)
+                ramp = min(1.0, (epoch - args.warmup + 1) / max(1, args.ramp_epochs))
+                loss = loss + args.lambda_aosk * ramp * cons
+                extras["aosk_consistency"] = float(cons.detach())
             opt.zero_grad(); loss.backward(); torch.nn.utils.clip_grad_norm_(student.parameters(), 5.0); opt.step(); losses.append(float(loss.detach()))
         val = select_threshold(student, val_loader, device)
         row = {"epoch": epoch, "train_loss": float(np.mean(losses)), "val": val, "oasis": {k: float(v) for k,v in extras.items()}}
@@ -277,11 +285,12 @@ def train_student(args, cfg, device, out, critic=None):
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--config", required=True); p.add_argument("--manifest", required=True); p.add_argument("--out", required=True)
-    p.add_argument("--mode", choices=("control", "critic", "connected"), required=True)
+    p.add_argument("--mode", choices=("control", "critic", "connected", "aosk", "aosk_connected"), required=True)
     p.add_argument("--test-split", default="test_debug")
     p.add_argument("--critic-epochs", type=int, default=10); p.add_argument("--epochs", type=int, default=12)
     p.add_argument("--warmup", type=int, default=4); p.add_argument("--ramp-epochs", type=int, default=3)
-    p.add_argument("--lambda-oasis", type=float, default=0.001); p.add_argument("--critic-width", type=int, default=8)
+    p.add_argument("--lambda-aosk", type=float, default=0.01,
+                   help="AOSK oriented-consistency weight (aosk / aosk_connected modes)")
     p.add_argument("--pair-weight", type=float, default=0.25,
                    help="Pair-consistency weight while training the critic")
     p.add_argument("--student-pair-weight", type=float, default=0.25,
@@ -296,7 +305,8 @@ def main():
     if errors: raise RuntimeError("G0 FAIL:\n" + "\n".join(errors))
     seed_all(int(cfg["seed"])); device = torch.device(cfg["device"]); out = Path(args.out); out.mkdir(parents=True, exist_ok=True)
     critic = None
-    if args.mode in ("critic", "connected"):
+    use_aosk = args.mode in ("aosk", "aosk_connected")
+    if args.mode in ("critic", "connected", "aosk_connected"):
         if args.critic_checkpoint:
             saved = torch.load(args.critic_checkpoint, map_location=device, weights_only=False)
             critic = RelationalOASISRC(width=int(saved.get("width", args.critic_width))).to(device)
@@ -312,7 +322,7 @@ def main():
                 val_critic["rgb_pair_drop"] < 0.05 or
                 val_critic["mask_pair_drop"] < 0.05):
             raise RuntimeError("OASIS-RC quality gate failed; connected training is blocked")
-    train_student(args, cfg, device, out, critic if args.mode == "connected" else None)
+    train_student(args, cfg, device, out, critic if args.mode in ("connected", "aosk_connected") else None, aosk=use_aosk)
 
 
 if __name__ == "__main__": main()
