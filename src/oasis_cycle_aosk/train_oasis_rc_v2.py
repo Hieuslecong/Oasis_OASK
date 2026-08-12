@@ -81,9 +81,10 @@ def build_targets(mask, invalid):
     return semantic, mismatch, pair_valid
 
 
-def make_loader(manifest, split, size, batch, shuffle):
+def make_loader(manifest, split, size, batch, shuffle, num_workers=0):
     ds = ManifestDataset(manifest, split, size)
-    return DataLoader(ds, batch_size=batch, shuffle=shuffle, num_workers=0, drop_last=False)
+    return DataLoader(ds, batch_size=batch, shuffle=shuffle, num_workers=num_workers, drop_last=False,
+                      pin_memory=(num_workers > 0))
 
 
 def make_student(kind, width):
@@ -180,7 +181,7 @@ def critic_metrics(critic, loader, device):
 
 
 def train_critic(args, cfg, device, out):
-    loader = make_loader(args.manifest, "train", cfg["image_size"], cfg["batch_size"], True)
+    loader = make_loader(args.manifest, "train", cfg["image_size"], cfg["batch_size"], True, cfg.get("num_workers", 0))
     critic = RelationalOASISRC(width=args.critic_width).to(device)
     opt = torch.optim.AdamW(critic.parameters(), lr=args.lr)
     history = []
@@ -230,8 +231,8 @@ def train_student(args, cfg, device, out, critic=None, aosk=False):
     # Critic construction/training must not change the student's initialization
     # or augmentation RNG stream.  This is required for paired control runs.
     seed_all(int(cfg["seed"]))
-    train_loader = make_loader(args.manifest, "train", cfg["image_size"], cfg["batch_size"], True)
-    val_loader = make_loader(args.manifest, "val", cfg["image_size"], cfg["batch_size"], False)
+    train_loader = make_loader(args.manifest, "train", cfg["image_size"], cfg["batch_size"], True, cfg.get("num_workers", 0))
+    val_loader = make_loader(args.manifest, "val", cfg["image_size"], cfg["batch_size"], False, cfg.get("num_workers", 0))
     student = make_student(args.student_kind, args.student_width).to(device)
     opt = torch.optim.AdamW(student.parameters(), lr=args.lr)
     history = []; best = None; best_state = None
@@ -316,7 +317,7 @@ def main():
             torch.save(saved, out / "critic.pt")
         else:
             critic = train_critic(args, cfg, device, out)
-        val_critic = critic_metrics(critic, make_loader(args.manifest, "val", cfg["image_size"], cfg["batch_size"], False), device)
+        val_critic = critic_metrics(critic, make_loader(args.manifest, "val", cfg["image_size"], cfg["batch_size"], False, cfg.get("num_workers", 0)), device)
         (out / "critic_validation.json").write_text(json.dumps(val_critic, indent=2)); print({"critic_validation": val_critic}, flush=True)
         if args.mode == "critic": return
         if (val_critic["valid_crack_recall"] < 0.80 or
