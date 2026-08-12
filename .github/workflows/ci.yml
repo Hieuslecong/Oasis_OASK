@@ -28,5 +28,6 @@ jobs:
       - name: Shell syntax
         run: |
           bash -n scripts/run_smoke.sh
+          bash -n scripts/run_lightweight_smoke.sh
           bash -n scripts/run_three_seeds.sh
           bash -n scripts/evaluate_checkpoint.sh
