@@ -3,7 +3,7 @@ from pathlib import Path
 
 EXPERIMENT_ID = "oasis-rc-v2-relational-hard-negative"
 CHECKPOINT_SCHEMA = 2
-IMPLEMENTATION_VERSION = "2.0.1"
+IMPLEMENTATION_VERSION = "2.0.2"
 METHOD_VERSION = "OASIS-RC-v2"
 
 
