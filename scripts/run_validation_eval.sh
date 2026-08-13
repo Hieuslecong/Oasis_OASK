@@ -18,17 +18,24 @@ if grep -q '"split"[[:space:]]*:[[:space:]]*"test"' "$MANIFEST"; then
   exit 3
 fi
 
-for name in S0_control S1_oasis_rc_v2 S2_aosk S3_oasis_rc_v2_aosk; do
+arms=(
+  S0_control
+  S1_oasis_rc_v2
+  S2_aosk_oriented
+  S3_oasis_rc_v2_aosk_oriented
+)
+
+for name in "${arms[@]}"; do
   ckpt="$ARM_ROOT/$name/student_only.pt"
-  if [ ! -f "$ckpt" ]; then
-    echo "SKIP $name: $ckpt missing"
-    continue
-  fi
+  test -f "$ckpt" || { echo "FAIL: official validation arm missing $ckpt" >&2; exit 4; }
   out="$EVAL_ROOT/${name}_val.json"
   echo "===== EVAL $name / val ====="
   "$PYTHON" -m oasis_cycle_aosk.evaluate_rc \
-    --checkpoint "$ckpt" --manifest "$MANIFEST" --split val \
-    --device cuda --out "$out" 2>&1 | tee "$EVAL_ROOT/${name}_val.log"
+    --checkpoint "$ckpt" \
+    --manifest "$MANIFEST" \
+    --split val \
+    --device cuda \
+    --out "$out" 2>&1 | tee "$EVAL_ROOT/${name}_val.log"
 done
 
 echo "VALIDATION_EVAL_DONE $(date -u +%FT%TZ)"
