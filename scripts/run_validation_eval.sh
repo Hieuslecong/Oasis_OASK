@@ -21,8 +21,8 @@ fi
 arms=(
   S0_control
   S1_oasis_rc_v2
-  S2_aosk_oriented
-  S3_oasis_rc_v2_aosk_oriented
+  S2_aosk_topology
+  S3_oasis_rc_v2_aosk_topology
 )
 
 for name in "${arms[@]}"; do
@@ -39,4 +39,5 @@ for name in "${arms[@]}"; do
 done
 
 echo "VALIDATION_EVAL_DONE $(date -u +%FT%TZ)"
+echo "AOSK_VARIANT=centerline-cldice-v1"
 echo "TEST_FIREWALL=CLOSED"
