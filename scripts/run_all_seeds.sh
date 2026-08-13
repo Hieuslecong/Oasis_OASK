@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+set -euo pipefail
+PACKAGE_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"; BASE_EXP_ROOT="${BASE_EXP_ROOT:?set BASE_EXP_ROOT}"; CANONICAL_MANIFEST="${CANONICAL_MANIFEST:?set CANONICAL_MANIFEST}"; NORMAL_ROOT="${NORMAL_ROOT:?set NORMAL_ROOT}"; PYTHON="${PYTHON:-/hdd1/hieulc/Oasis_AOSK/.venv-oasis-rc-v2-gpu/bin/python}"; DATA_ROOT="${DATA_ROOT:-$BASE_EXP_ROOT/data}"
+first=1
+for seed in 1337 2027 31415; do prepare=0; if [ "$first" = "1" ]; then prepare=1; first=0; fi; EXP_ROOT="$BASE_EXP_ROOT/seed_$seed" DATA_ROOT="$DATA_ROOT" CANONICAL_MANIFEST="$CANONICAL_MANIFEST" NORMAL_ROOT="$NORMAL_ROOT" PYTHON="$PYTHON" SEED="$seed" PREPARE_DATA="$prepare" EMPTY_CERTIFICATION_CSV="${EMPTY_CERTIFICATION_CSV:-}" NORMAL_FRACTION="${NORMAL_FRACTION:-0.25}" CRITIC_EPOCHS="${CRITIC_EPOCHS:-10}" EPOCHS="${EPOCHS:-12}" RUN_ARMS="${RUN_ARMS:-1}" "$PACKAGE_ROOT/scripts/run_training_ready.sh"; done
+echo "ALL_3_SEEDS_VALIDATION_DONE"; echo "TEST_FIREWALL=CLOSED"

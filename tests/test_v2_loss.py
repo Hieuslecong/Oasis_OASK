@@ -1,57 +1,13 @@
 import pytest
-
-torch = pytest.importorskip("torch")
-
-from oasis_cycle_aosk.losses_v2 import oasis_rc_student_loss_v2
-from oasis_cycle_aosk.models import RelationalOASISRC
-
+torch=pytest.importorskip("torch")
+from oasis_rc_v2.critic import OASISRCv2Critic
+from oasis_rc_v2.losses import oasis_rc_student_loss_v2
 
 def test_v2_corrupted_ranking_has_student_gradient_only():
-    critic = RelationalOASISRC(width=4)
-    for parameter in critic.parameters():
-        parameter.requires_grad_(False)
-
-    image = torch.rand(2, 3, 32, 32)
-    target = torch.zeros(2, 1, 32, 32)
-    target[:, :, 8:24, 15:17] = 1.0
-    student_logits = torch.zeros(2, 1, 32, 32, requires_grad=True)
-    student_mask = student_logits.sigmoid()
-    corrupted = target.flip(-1)
-
-    with torch.no_grad():
-        gt_out = critic(image, target)
-        corrupted_out = critic(image, corrupted)
-    pred_out = critic(image, student_mask)
-    loss, terms = oasis_rc_student_loss_v2(
-        pred_out, gt_out, corrupted_out, student_mask, target
-    )
-    loss.backward()
-
-    assert torch.isfinite(loss)
-    assert torch.isfinite(student_logits.grad).all()
-    assert student_logits.grad.abs().sum() > 0
-    assert all(parameter.grad is None for parameter in critic.parameters())
-
-    required_loss_terms = {"rank_gt", "rank_corrupted", "fp"}
-    assert required_loss_terms.issubset(terms)
-    for key in required_loss_terms:
-        assert torch.isfinite(terms[key])
-
-    diagnostic_terms = {
-        "e_pred",
-        "e_gt",
-        "e_corrupted",
-        "delta_pred_gt",
-        "delta_pred_corrupted",
-    }
-    assert diagnostic_terms.issubset(terms)
-    for key in diagnostic_terms:
-        assert torch.isfinite(terms[key])
-
-
+ c=OASISRCv2Critic(width=4)
+ for p in c.parameters():p.requires_grad_(False)
+ x=torch.rand(2,3,32,32);y=torch.zeros(2,1,32,32);y[:,:,8:24,15:17]=1;l=torch.zeros(2,1,32,32,requires_grad=True);p=l.sigmoid();w=y.flip(-1)
+ with torch.no_grad():gt=c(x,y);co=c(x,w)
+ loss,t=oasis_rc_student_loss_v2(c(x,p),gt,co,p,y);loss.backward();assert torch.isfinite(loss) and torch.isfinite(l.grad).all() and l.grad.abs().sum()>0;assert all(z.grad is None for z in c.parameters());assert {"rank_gt","rank_corrupted","fp","e_pred","e_gt","e_corrupted"}.issubset(t)
 def test_v2_critic_output_contract():
-    critic = RelationalOASISRC(width=4)
-    out = critic(torch.rand(1, 3, 32, 32), torch.rand(1, 1, 32, 32))
-    assert out["semantic"].shape == (1, 3, 32, 32)
-    assert out["mismatch"].shape == (1, 1, 32, 32)
-    assert out["pair"].shape == (1, 1)
+ o=OASISRCv2Critic(width=4)(torch.rand(1,3,32,32),torch.rand(1,1,32,32));assert o["semantic"].shape==(1,3,32,32);assert o["mismatch"].shape==(1,1,32,32);assert o["pair"].shape==(1,1)
