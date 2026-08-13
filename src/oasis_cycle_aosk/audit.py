@@ -145,14 +145,18 @@ def audit(
             binary = _decoded_binary_mask(mask_path)
             native_fg = int(binary.sum())
             if native_fg == 0:
-                errors.append(
-                    f"row {i}: crack-positive row has native-empty mask; classify it "
-                    "explicitly as true normal or repair the annotation"
-                )
+                if r.get("empty_target_status") == "verified_no_crack":
+                    pass
+                else:
+                    errors.append(
+                        f"row {i}: crack-positive row has native-empty mask; classify it "
+                        "explicitly as true normal or repair the annotation"
+                    )
 
             raw_mask = _sha256_file(mask_path)
             decoded_mask = _array_sha256(binary, "binary-mask")
-            mask_item = (i, split, str(mask_path.resolve()))
+            cert_empty = r.get("empty_target_status") == "verified_no_crack"
+            mask_item = (i, split, str(mask_path.resolve()), cert_empty)
             raw_mask_rows[raw_mask].append(mask_item)
             decoded_mask_rows[decoded_mask].append(mask_item)
             pair_rows[_pair_sha256(decoded_rgb, decoded_mask)].append(item)
@@ -207,6 +211,8 @@ def audit(
 
     def check_mask_groups(kind, groups):
         for digest, items in groups.items():
+            if items and all(it[3] for it in items):
+                continue
             splits = {item[1] for item in items}
             if len(splits) > 1:
                 paths = sorted({item[2] for item in items})

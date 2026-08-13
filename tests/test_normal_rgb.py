@@ -181,3 +181,56 @@ def test_actual_aosk_loss_backpropagates_to_logits():
     assert logits.grad is not None
     assert torch.isfinite(logits.grad).all()
     assert float(logits.grad.abs().sum()) > 0.0
+
+
+def test_exclude_file_removes_cross_label_duplicate_from_normal_train(tmp_path):
+    from scripts.add_normal_rgb_to_manifest import main as build_manifest  # type: ignore
+
+    normal_root = tmp_path / "Non-cracked"
+    normal_root.mkdir()
+    keep = normal_root / "keep.png"
+    dup = normal_root / "dup.png"
+    _save_rgb(keep)
+    _save_rgb(dup)
+    canonical = tmp_path / "canonical.jsonl"
+    canonical.write_text(
+        json.dumps(
+            {
+                "image": str(tmp_path / "crack.png"),
+                "mask": str(tmp_path / "mask.png"),
+                "split": "train",
+                "source_id": "s",
+                "lineage_id": "s::1",
+                "is_normal": False,
+            }
+        )
+        + "\n"
+    )
+    _save_rgb(tmp_path / "crack.png")
+    _save_mask(tmp_path / "mask.png")
+    exclude = tmp_path / "exclude.json"
+    exclude.write_text(
+        json.dumps({"excluded_normal_candidates": [{"path": str(dup)}]})
+    )
+    out = tmp_path / "manifest_with_normal.jsonl"
+    import sys
+
+    sys.argv = [
+        "add_normal_rgb_to_manifest",
+        "--canonical-manifest",
+        str(canonical),
+        "--normal-root",
+        str(normal_root),
+        "--out",
+        str(out),
+        "--train-ratio",
+        "1.0",
+        "--exclude-file",
+        str(exclude),
+    ]
+    build_manifest()
+    rows = [json.loads(l) for l in out.read_text().splitlines() if l.strip()]
+    normal_rows = [r for r in rows if r.get("is_normal")]
+    assert len(normal_rows) == 1
+    assert normal_rows[0]["image"] == str(keep)
+    assert all(r["image"] != str(dup) for r in normal_rows)
