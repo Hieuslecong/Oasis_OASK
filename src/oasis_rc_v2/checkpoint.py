@@ -27,6 +27,11 @@ def _require_identity(saved, kind):
         raise ValueError(f"{kind} experiment_id mismatch; legacy/foreign checkpoint rejected")
     if saved.get("method_version") != METHOD_VERSION:
         raise ValueError(f"{kind} method_version mismatch")
+    if saved.get("implementation_version") != IMPLEMENTATION_VERSION:
+        raise ValueError(
+            f"{kind} implementation_version mismatch: "
+            f"{saved.get('implementation_version')!r} != {IMPLEMENTATION_VERSION!r}"
+        )
 
 
 def validate_critic_checkpoint(saved, manifest, cfg, normal_fraction, normal_critic_weight):
