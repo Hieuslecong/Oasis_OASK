@@ -290,7 +290,9 @@ The runner atomically creates `.test_opened` before any canonical test image/mas
 
 ## CI and host acceptance
 
-GitHub CI verifies installation, compileall, pytest and shell syntax. It does **not** certify the user's real `/hdd1/...` dataset or NVIDIA A30 runtime.
+GitHub CI verifies installation, compileall, pytest and shell syntax. Implementation 2.0.2 passed GitHub Actions run #199 with 49/49 tests; the package built as version 2.0.2 and all canonical shell syntax checks passed on that code state.
+
+GitHub CI does **not** certify the user's real `/hdd1/...` dataset or NVIDIA A30 runtime.
 
 Final acceptance order:
 
