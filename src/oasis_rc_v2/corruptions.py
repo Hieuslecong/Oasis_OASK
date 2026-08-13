@@ -64,7 +64,7 @@ def _texture_fp_blob(single, image_single, generator, kernel=11):
     if float(score.max()) <= 0.0:
         return _random_blob(single, generator, kernel=kernel)
     index = int(flat.argmax().item())
-    h, w = single.shape[-2:]
+    _, _, _, w = single.shape
     y, x = divmod(index, w)
     seed = torch.zeros_like(single)
     seed[..., y, x] = 1.0
@@ -101,8 +101,7 @@ def _wrong_connection(single, generator):
     ys = torch.linspace(y1, y2, steps, device=single.device).round().long()
     xs = torch.linspace(x1, x2, steps, device=single.device).round().long()
     out[0, 0, ys, xs] = 1.0
-    out = F.max_pool2d(out, 3, 1, 1)
-    return (out > 0.5).float()
+    return (F.max_pool2d(out, 3, 1, 1) > 0.5).float()
 
 
 def _nonself_crack_donor(mask, index, crack_indices, generator):
@@ -142,9 +141,8 @@ def _force_difference(candidate, original, generator):
 
 def _apply(kind, mask, i, crack_indices, generator, image=None):
     original = mask[i : i + 1]
-    h, w = original.shape[-2:]
+    _, _, _, w = original.shape
     donor_index = None
-
     if kind == 0:
         dx = _randint(2, max(3, min(9, w // 8 + 2)), mask.device, generator)
         if _randint(0, 2, mask.device, generator) == 0:
@@ -167,18 +165,23 @@ def _apply(kind, mask, i, crack_indices, generator, image=None):
     elif kind in (6, 7):
         candidate, donor_index = _nonself_crack_donor(mask, i, crack_indices, generator)
         if candidate is None:
-            candidate = _wrong_connection(original, generator)
-            if int((candidate != original).sum().item()) == 0:
-                candidate = _random_blob(original, generator, kernel=7)
+            raise RuntimeError(
+                f"{CORRUPTION_NAMES[kind]} requires an available non-self crack donor"
+            )
     else:
         image_single = None if image is None else image[i : i + 1]
         candidate = torch.maximum(
             original,
             _texture_fp_blob(original, image_single, generator, kernel=11),
         )
+    return (candidate > 0.5).float(), donor_index
 
-    candidate = (candidate > 0.5).float()
-    return candidate, donor_index
+
+def _crack_pool(crack_count):
+    base = [0, 1, 2, 3, 4, 5, 8]
+    if int(crack_count) > 1:
+        base.append(6)
+    return tuple(base)
 
 
 def make_corrupted_mask(
@@ -196,11 +199,14 @@ def make_corrupted_mask(
 
     Invariants: online C1--C9 only, non-self crack donors, non-empty changes,
     IoU/minimum-difference qualification, no circular ``torch.roll``, and a
-    texture-guided C9 when RGB is supplied.
+    texture-guided C9 when RGB is supplied. C7/C8 are never silently replaced
+    by another corruption while retaining a donor label.
     """
     if mask.ndim != 4 or mask.shape[1] != 1:
         raise ValueError("mask must be Bx1xHxW")
-    if image is not None and (image.ndim != 4 or image.shape[0] != mask.shape[0]):
+    if image is not None and (
+        image.ndim != 4 or image.shape[0] != mask.shape[0] or image.shape[1] != 3
+    ):
         raise ValueError("image must be Bx3xHxW with the same batch size")
     mask = (mask > 0.5).float()
     b, _, h, w = mask.shape
@@ -227,7 +233,7 @@ def make_corrupted_mask(
         elif bool(normal[i]):
             kind = 7 if crack_indices.numel() > 0 else 8
         else:
-            pool = (0, 1, 2, 3, 4, 5, 6, 8)
+            pool = _crack_pool(crack_indices.numel())
             kind = pool[_randint(0, len(pool), mask.device, generator)]
 
         candidate = None
@@ -244,7 +250,7 @@ def make_corrupted_mask(
                 if bool(normal[i]):
                     kind = 7 if crack_indices.numel() > 0 else 8
                 else:
-                    pool = (0, 1, 2, 3, 4, 5, 6, 8)
+                    pool = _crack_pool(crack_indices.numel())
                     kind = pool[_randint(0, len(pool), mask.device, generator)]
         candidate = _force_difference(candidate, mask[i : i + 1], generator)
         if not _acceptable(candidate, mask[i : i + 1], max_iou, min_diff_pixels):
@@ -262,6 +268,8 @@ def make_corrupted_mask(
             raise RuntimeError("corruption failed IoU/minimum-difference qualification")
         if donor_index is not None and donor_index == i:
             raise RuntimeError("donor corruption selected self")
+        if kind in (6, 7) and donor_index is None:
+            raise RuntimeError("donor corruption completed without a donor")
         wrong[i : i + 1] = candidate
         meta.append(
             {
