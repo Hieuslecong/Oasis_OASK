@@ -1,8 +1,12 @@
-"""Canonical online C1--C9 hard-negative corruptions for OASIS-RC v2."""
+"""Canonical online C1--C9 hard-negative mask variants for OASIS-RC v2."""
 from __future__ import annotations
 
 import torch
 import torch.nn.functional as F
+
+from .mask_donor import nonself_crack_donor
+from .mask_geometry import local_break, randint, shift_zero, wrong_connection
+from .mask_texture import texture_fp_blob
 
 CORRUPTION_NAMES = (
     "C1_translation",
@@ -17,171 +21,85 @@ CORRUPTION_NAMES = (
 )
 
 
-def shift_zero(mask, dx=3, dy=0):
-    if mask.ndim != 4:
-        raise ValueError("mask must be Bx1xHxW")
-    _, _, h, w = mask.shape
-    out = torch.zeros_like(mask)
-    xs0, xs1 = max(0, dx), min(w, w + dx)
-    ys0, ys1 = max(0, dy), min(h, h + dy)
-    src_x0, src_x1 = max(0, -dx), min(w, w - dx)
-    src_y0, src_y1 = max(0, -dy), min(h, h - dy)
-    if xs1 > xs0 and ys1 > ys0:
-        out[..., ys0:ys1, xs0:xs1] = mask[..., src_y0:src_y1, src_x0:src_x1]
-    return out
-
-
-def _randint(low, high, device, generator):
-    return int(torch.randint(low, high, (), device=device, generator=generator).item())
-
-
-def _random_blob(single, generator, kernel=11):
-    noise = torch.rand(single.shape, device=single.device, generator=generator)
-    seed = (noise > 0.995).float()
-    blob = F.max_pool2d(seed, kernel, 1, kernel // 2)
-    if float(blob.sum()) == 0.0:
-        h, w = single.shape[-2:]
-        y = _randint(0, h, single.device, generator)
-        x = _randint(0, w, single.device, generator)
-        blob[..., y, x] = 1.0
-    return (blob > 0.5).float()
-
-
-def _texture_fp_blob(single, image_single, generator, kernel=11):
-    """Place a false-positive blob preferentially on high-texture RGB background."""
-    if image_single is None:
-        return _random_blob(single, generator, kernel=kernel)
-    if image_single.ndim != 4 or image_single.shape[0] != 1 or image_single.shape[1] != 3:
-        raise ValueError("image_single must be 1x3xHxW")
-    gray = image_single.mean(1, keepdim=True)
-    gx = F.pad((gray[..., 1:] - gray[..., :-1]).abs(), (0, 1, 0, 0))
-    gy = F.pad((gray[..., 1:, :] - gray[..., :-1, :]).abs(), (0, 0, 0, 1))
-    texture = gx + gy
-    background = 1.0 - F.max_pool2d(single, 7, 1, 3).clamp(0, 1)
-    score = texture * background
-    jitter = torch.rand(score.shape, device=score.device, generator=generator) * 1e-6
-    flat = (score + jitter).flatten()
-    if float(score.max()) <= 0.0:
-        return _random_blob(single, generator, kernel=kernel)
-    index = int(flat.argmax().item())
-    _, _, _, w = single.shape
-    y, x = divmod(index, w)
-    seed = torch.zeros_like(single)
-    seed[..., y, x] = 1.0
-    blob = F.max_pool2d(seed, kernel, 1, kernel // 2)
-    return (blob > 0.5).float()
-
-
-def _local_break(single, generator):
-    out = single.clone()
-    coords = torch.nonzero(single[0, 0] > 0.5, as_tuple=False)
-    if coords.numel() == 0:
-        return out
-    idx = _randint(0, coords.shape[0], single.device, generator)
-    y, x = (int(v) for v in coords[idx].tolist())
-    h, w = single.shape[-2:]
-    radius = max(1, min(h, w) // 32)
-    y0, y1 = max(0, y - radius), min(h, y + radius + 1)
-    x0, x1 = max(0, x - radius * 2), min(w, x + radius * 2 + 1)
-    out[..., y0:y1, x0:x1] = 0.0
-    return out
-
-
-def _wrong_connection(single, generator):
-    out = single.clone()
-    coords = torch.nonzero(single[0, 0] > 0.5, as_tuple=False)
-    if coords.shape[0] < 2:
-        return out
-    first = coords[_randint(0, coords.shape[0], single.device, generator)]
-    distances = (coords.float() - first.float()).abs().sum(1)
-    second = coords[int(distances.argmax().item())]
-    y1, x1 = (int(v) for v in first.tolist())
-    y2, x2 = (int(v) for v in second.tolist())
-    steps = max(abs(y2 - y1), abs(x2 - x1)) + 1
-    ys = torch.linspace(y1, y2, steps, device=single.device).round().long()
-    xs = torch.linspace(x1, x2, steps, device=single.device).round().long()
-    out[0, 0, ys, xs] = 1.0
-    return (F.max_pool2d(out, 3, 1, 1) > 0.5).float()
-
-
-def _nonself_crack_donor(mask, index, crack_indices, generator):
-    candidates = crack_indices[crack_indices != index]
-    if candidates.numel() == 0:
-        return None, None
-    pos = _randint(0, candidates.numel(), mask.device, generator)
-    donor_index = int(candidates[pos].item())
-    return mask[donor_index : donor_index + 1].clone(), donor_index
-
-
 def _iou(a, b):
-    aa = a > 0.5
-    bb = b > 0.5
+    aa, bb = a > 0.5, b > 0.5
     inter = (aa & bb).sum().float()
     union = (aa | bb).sum().float()
-    if float(union) == 0.0:
-        return 1.0
-    return float((inter / union).item())
+    return 1.0 if float(union) == 0.0 else float((inter / union).item())
 
 
 def _acceptable(candidate, original, max_iou, min_diff_pixels):
     diff = int((candidate != original).sum().item())
-    return diff >= int(min_diff_pixels) or _iou(candidate, original) <= float(max_iou)
+    return diff > 0 and (
+        diff >= int(min_diff_pixels) or _iou(candidate, original) <= float(max_iou)
+    )
 
 
-def _force_difference(candidate, original, generator):
-    if int((candidate != original).sum().item()) > 0:
-        return candidate
-    out = candidate.clone()
-    h, w = out.shape[-2:]
-    y = _randint(0, h, out.device, generator)
-    x = _randint(0, w, out.device, generator)
-    out[..., y, x] = 1.0 - out[..., y, x]
-    return out
+def _kernel(device, generator, choices):
+    return int(choices[randint(0, len(choices), device, generator)])
 
 
-def _apply(kind, mask, i, crack_indices, generator, image=None):
+def _apply(kind, mask, i, crack_indices, generator, image=None, is_normal=False):
     original = mask[i : i + 1]
     _, _, _, w = original.shape
     donor_index = None
     if kind == 0:
-        dx = _randint(2, max(3, min(9, w // 8 + 2)), mask.device, generator)
-        if _randint(0, 2, mask.device, generator) == 0:
-            dx = -dx
-        candidate = shift_zero(original, dx=dx, dy=0)
+        dx = randint(2, max(3, min(9, w // 8 + 2)), mask.device, generator)
+        dx *= -1 if randint(0, 2, mask.device, generator) == 0 else 1
+        candidate = shift_zero(original, dx=dx)
     elif kind == 1:
-        candidate = -F.max_pool2d(-original, 3, 1, 1)
+        k = _kernel(mask.device, generator, (3, 5, 7))
+        candidate = -F.max_pool2d(-original, k, 1, k // 2)
     elif kind == 2:
-        candidate = F.max_pool2d(original, 3, 1, 1)
+        k = _kernel(mask.device, generator, (3, 5, 7))
+        candidate = F.max_pool2d(original, k, 1, k // 2)
     elif kind == 3:
-        candidate = _local_break(original, generator)
+        candidate = local_break(original, generator)
     elif kind == 4:
+        k = _kernel(mask.device, generator, (5, 7, 9))
         candidate = (
-            F.max_pool2d(original, 7, 1, 3)
-            if _randint(0, 2, mask.device, generator) == 0
-            else -F.max_pool2d(-original, 7, 1, 3)
+            F.max_pool2d(original, k, 1, k // 2)
+            if randint(0, 2, mask.device, generator) == 0
+            else -F.max_pool2d(-original, k, 1, k // 2)
         )
     elif kind == 5:
-        candidate = _wrong_connection(original, generator)
-    elif kind in (6, 7):
-        candidate, donor_index = _nonself_crack_donor(mask, i, crack_indices, generator)
+        candidate = wrong_connection(original, generator)
+    elif kind == 6:
+        if is_normal:
+            raise ValueError("C7_donor_mask requires a crack-positive RGB row")
+        candidate, donor_index = nonself_crack_donor(mask, i, crack_indices, generator)
         if candidate is None:
-            raise RuntimeError(
-                f"{CORRUPTION_NAMES[kind]} requires an available non-self crack donor"
-            )
+            raise RuntimeError("C7_donor_mask requires a non-self crack donor")
+    elif kind == 7:
+        if not is_normal:
+            raise ValueError("C8_crack_on_normal requires true-normal RGB")
+        if float(original.sum()) != 0.0:
+            raise ValueError("true-normal C8 row must have an empty target mask")
+        candidate, donor_index = nonself_crack_donor(mask, i, crack_indices, generator)
+        if candidate is None:
+            raise RuntimeError("C8_crack_on_normal requires an available crack donor")
+    elif kind == 8:
+        rgb = None if image is None else image[i : i + 1]
+        candidate = torch.maximum(original, texture_fp_blob(original, rgb, generator))
     else:
-        image_single = None if image is None else image[i : i + 1]
-        candidate = torch.maximum(
-            original,
-            _texture_fp_blob(original, image_single, generator, kernel=11),
-        )
+        raise ValueError(f"unknown corruption kind: {kind}")
     return (candidate > 0.5).float(), donor_index
 
 
-def _crack_pool(crack_count):
-    base = [0, 1, 2, 3, 4, 5, 8]
+def _eligible(is_normal, crack_count):
+    if is_normal:
+        return (7, 8) if int(crack_count) > 0 else (8,)
+    kinds = [0, 1, 2, 3, 4, 5, 8]
     if int(crack_count) > 1:
-        base.append(6)
-    return tuple(base)
+        kinds.append(6)
+    return tuple(kinds)
+
+
+def _ordered(kinds, device, generator):
+    if len(kinds) < 2:
+        return list(kinds)
+    order = torch.randperm(len(kinds), device=device, generator=generator).tolist()
+    return [kinds[j] for j in order]
 
 
 def make_corrupted_mask(
@@ -195,12 +113,12 @@ def make_corrupted_mask(
     return_meta=False,
     image=None,
 ):
-    """Generate one certified hard negative per sample.
+    """Return one qualified C1--C9 variant per row without changing operator identity.
 
-    Invariants: online C1--C9 only, non-self crack donors, non-empty changes,
-    IoU/minimum-difference qualification, no circular ``torch.roll``, and a
-    texture-guided C9 when RGB is supplied. C7/C8 are never silently replaced
-    by another corruption while retaining a donor label.
+    A no-op operator is retried with its own stochastic parameters. For unforced
+    sampling, another eligible operator may be tried only after that operator is
+    exhausted. No random pixel-toggle fallback is permitted. C8 is accepted only
+    on an explicit true-normal RGB row and always uses a crack-positive donor.
     """
     if mask.ndim != 4 or mask.shape[1] != 1:
         raise ValueError("mask must be Bx1xHxW")
@@ -208,14 +126,18 @@ def make_corrupted_mask(
         image.ndim != 4 or image.shape[0] != mask.shape[0] or image.shape[1] != 3
     ):
         raise ValueError("image must be Bx3xHxW with the same batch size")
+    if int(max_attempts) <= 0:
+        raise ValueError("max_attempts must be positive")
+
     mask = (mask > 0.5).float()
     b, _, h, w = mask.shape
-    if true_normal is None:
-        normal = mask.flatten(1).sum(1) == 0
-    else:
-        normal = true_normal.to(mask.device, dtype=torch.bool).view(-1)
-        if normal.numel() != b:
-            raise ValueError("true_normal must have one flag per batch row")
+    normal = (
+        mask.flatten(1).sum(1) == 0
+        if true_normal is None
+        else true_normal.to(mask.device, dtype=torch.bool).view(-1)
+    )
+    if normal.numel() != b:
+        raise ValueError("true_normal must have one flag per batch row")
     crack_indices = torch.nonzero(
         ~normal & (mask.flatten(1).sum(1) > 0), as_tuple=False
     ).flatten()
@@ -224,80 +146,84 @@ def make_corrupted_mask(
     wrong = torch.empty_like(mask)
     meta = []
     for i in range(b):
-        if forced_kinds is not None:
-            kind = int(
+        if forced_kinds is None:
+            kinds = _ordered(_eligible(bool(normal[i]), crack_indices.numel()), mask.device, generator)
+        else:
+            forced = int(
                 forced_kinds[i]
                 if isinstance(forced_kinds, (list, tuple))
                 else forced_kinds
             )
-        elif bool(normal[i]):
-            kind = 7 if crack_indices.numel() > 0 else 8
-        else:
-            pool = _crack_pool(crack_indices.numel())
-            kind = pool[_randint(0, len(pool), mask.device, generator)]
+            if not 0 <= forced < len(CORRUPTION_NAMES):
+                raise ValueError(f"forced corruption kind out of range: {forced}")
+            if forced == 7 and not bool(normal[i]):
+                raise ValueError("C8_crack_on_normal requires true-normal RGB")
+            if forced == 6 and bool(normal[i]):
+                raise ValueError("C7_donor_mask requires a crack-positive RGB row")
+            kinds = [forced]
 
-        candidate = None
-        donor_index = None
-        attempts = 0
-        for attempts in range(1, int(max_attempts) + 1):
-            candidate, donor_index = _apply(
-                kind, mask, i, crack_indices, generator, image=image
-            )
-            candidate = _force_difference(candidate, mask[i : i + 1], generator)
-            if _acceptable(candidate, mask[i : i + 1], max_iou, min_diff_pixels):
+        accepted = None
+        accepted_kind = accepted_donor = accepted_attempt = None
+        total_attempts = 0
+        last_error = None
+        for kind in kinds:
+            for attempt in range(1, int(max_attempts) + 1):
+                total_attempts += 1
+                try:
+                    candidate, donor = _apply(
+                        kind,
+                        mask,
+                        i,
+                        crack_indices,
+                        generator,
+                        image=image,
+                        is_normal=bool(normal[i]),
+                    )
+                except RuntimeError as exc:
+                    last_error = exc
+                    continue
+                if _acceptable(candidate, mask[i : i + 1], max_iou, min_diff_pixels):
+                    accepted, accepted_kind = candidate, kind
+                    accepted_donor, accepted_attempt = donor, attempt
+                    break
+            if accepted is not None:
                 break
-            if forced_kinds is None:
-                if bool(normal[i]):
-                    kind = 7 if crack_indices.numel() > 0 else 8
-                else:
-                    pool = _crack_pool(crack_indices.numel())
-                    kind = pool[_randint(0, len(pool), mask.device, generator)]
-        candidate = _force_difference(candidate, mask[i : i + 1], generator)
-        if not _acceptable(candidate, mask[i : i + 1], max_iou, min_diff_pixels):
-            flat = candidate.view(-1).clone()
-            original_flat = mask[i : i + 1].view(-1)
-            count = min(int(min_diff_pixels), flat.numel())
-            idxs = torch.randperm(
-                flat.numel(), device=flat.device, generator=generator
-            )[:count]
-            flat[idxs] = 1.0 - original_flat[idxs]
-            candidate = flat.view_as(candidate)
-        if int((candidate != mask[i : i + 1]).sum().item()) == 0:
-            raise RuntimeError("corruption regeneration produced a no-op")
-        if not _acceptable(candidate, mask[i : i + 1], max_iou, min_diff_pixels):
-            raise RuntimeError("corruption failed IoU/minimum-difference qualification")
-        if donor_index is not None and donor_index == i:
-            raise RuntimeError("donor corruption selected self")
-        if kind in (6, 7) and donor_index is None:
-            raise RuntimeError("donor corruption completed without a donor")
-        wrong[i : i + 1] = candidate
+
+        if accepted is None:
+            name = CORRUPTION_NAMES[kinds[0]] if len(kinds) == 1 else "eligible C1-C9 set"
+            detail = f"; last error: {last_error}" if last_error else ""
+            raise RuntimeError(
+                f"{name} could not produce a qualified mask after {total_attempts} attempts{detail}"
+            )
+        if accepted_donor is not None and accepted_donor == i:
+            raise RuntimeError("donor operator selected self")
+        if accepted_kind in (6, 7) and accepted_donor is None:
+            raise RuntimeError("donor operator completed without a crack donor")
+
+        wrong[i : i + 1] = accepted
         meta.append(
             {
-                "kind": CORRUPTION_NAMES[kind],
-                "kind_index": kind,
-                "attempts": attempts,
-                "changed_pixels": int(
-                    (candidate != mask[i : i + 1]).sum().item()
-                ),
-                "iou": _iou(candidate, mask[i : i + 1]),
-                "donor_index": donor_index,
-                "texture_guided": bool(kind == 8 and image is not None),
+                "kind": CORRUPTION_NAMES[accepted_kind],
+                "kind_index": accepted_kind,
+                "attempts": total_attempts,
+                "operator_attempt": accepted_attempt,
+                "changed_pixels": int((accepted != mask[i : i + 1]).sum().item()),
+                "iou": _iou(accepted, mask[i : i + 1]),
+                "donor_index": accepted_donor,
+                "texture_guided": bool(accepted_kind == 8 and image is not None),
+                "operator_preserved": True,
             }
         )
 
     invalid = (wrong - mask).abs().clamp(0, 1)
     if (invalid.flatten(1).sum(1) <= 0).any():
-        raise RuntimeError("all OASIS-RC v2 corruptions must be non-empty")
+        raise RuntimeError("all OASIS-RC v2 variants must be non-empty")
     return (wrong, invalid, meta) if return_meta else (wrong, invalid)
 
 
 def build_targets(mask, invalid):
     semantic = mask[:, 0].long()
-    semantic = torch.where(
-        invalid[:, 0] > 0.5,
-        torch.full_like(semantic, 2),
-        semantic,
-    )
+    semantic = torch.where(invalid[:, 0] > 0.5, torch.full_like(semantic, 2), semantic)
     mismatch = invalid
     pair_valid = (invalid.flatten(1).sum(1) == 0).float().unsqueeze(1)
     return semantic, mismatch, pair_valid
