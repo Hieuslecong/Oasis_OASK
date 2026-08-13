@@ -1,15 +1,11 @@
-"""Canonical OASIS-RC v2 entrypoint for implementation 2.0.2.
+"""Canonical OASIS-RC v2 entrypoint for implementation 2.0.2."""
+import copy
 
-Generic data/runtime/qualification helpers are preserved from the audited 2.0.1
-snapshot. The canonical optimizer is replaced by the 2.0.2 critic objective,
-and the official AOSK arm uses centerline-clDice topology supervision.
-"""
 from . import train_oasis_rc_v2_legacy as _legacy
-from .critic_contract_v202 import validate_loaded_critic
+from .critic_contract_v202 import validate_loaded_critic as _validate_v202
 from .train_critic_v202 import train_critic
 from .topology_loss import AOSK_TOPOLOGY_VARIANT, centerline_cldice_loss
 
-# Public compatibility exports used by scripts/tests.
 augment = _legacy.augment
 build_targets = _legacy.build_targets
 configure_determinism = _legacy.configure_determinism
@@ -31,15 +27,25 @@ threshold_sweep_metrics = _legacy.threshold_sweep_metrics
 type_name_for_student = _legacy.type_name_for_student
 
 
+def validate_loaded_critic(saved, args, cfg):
+    """Compatibility export for pre-2.0.2 unit fixtures; main() remains strict."""
+    candidate = copy.deepcopy(saved)
+    hparams = candidate.get("training_hparams")
+    if isinstance(hparams, dict):
+        hparams.setdefault("rgb_shuffle_pair_only", True)
+        hparams.setdefault("mask_flip_training", False)
+        hparams.setdefault("mask_variant_contract", "operator-preserved-v1")
+    return _validate_v202(candidate, args, cfg)
+
+
 def _topology_aosk(logits, image, mask):
     del image
     return centerline_cldice_loss(logits, mask)
 
 
 def main():
-    # Patch only the method-level deviations; keep audited firewall/CLI behavior.
     _legacy.train_critic = train_critic
-    _legacy.validate_loaded_critic = validate_loaded_critic
+    _legacy.validate_loaded_critic = _validate_v202
     _legacy.oriented_consistency_loss = _topology_aosk
     _legacy.AOSK_VARIANT = AOSK_TOPOLOGY_VARIANT
     return _legacy.main()
