@@ -39,11 +39,31 @@ def oasis_rc_critic_loss(
     mismatch_weight=1.0,
     pair_weight=0.25,
 ):
+    """Canonical critic objective with pair-only RGB-shuffle supervision."""
+    rgb_shuffle_only = bool(
+        pair_valid.numel() > 0
+        and torch.all(pair_valid.detach() <= 0.5)
+        and float(mismatch_target.detach().abs().sum()) == 0.0
+    )
+    if rgb_shuffle_only:
+        pair = F.binary_cross_entropy_with_logits(out["pair"], torch.zeros_like(pair_valid))
+        zero = (
+            out["semantic"].sum() * 0.0
+            + out["crack"].sum() * 0.0
+            + out["mismatch"].sum() * 0.0
+        )
+        return pair + zero, {
+            "semantic": zero.detach(),
+            "valid_crack_dice": zero.detach(),
+            "mismatch": zero.detach(),
+            "pair": pair.detach(),
+            "rgb_shuffle_pair_only": out["pair"].new_tensor(1.0),
+        }
+
     if class_weight is None:
         class_weight = out["semantic"].new_tensor([1.0, 20.0, 12.0])
     semantic = F.cross_entropy(out["semantic"], semantic_target.long(), weight=class_weight)
     crack_dice = valid_crack_dice_loss(out["crack"], semantic_target, pair_valid)
-
     pos = mismatch_target.sum().clamp_min(1.0)
     neg = mismatch_target.numel() - pos
     pos_weight = (neg / pos).clamp(1.0, 20.0).detach()
@@ -62,6 +82,7 @@ def oasis_rc_critic_loss(
         "valid_crack_dice": crack_dice.detach(),
         "mismatch": mismatch.detach(),
         "pair": pair.detach(),
+        "rgb_shuffle_pair_only": out["pair"].new_tensor(0.0),
     }
 
 
