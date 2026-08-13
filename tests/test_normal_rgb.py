@@ -1,4 +1,6 @@
+import importlib.util
 import json
+from pathlib import Path
 
 import pytest
 import torch
@@ -8,6 +10,16 @@ from oasis_cycle_aosk.aosk import oriented_consistency_loss
 from oasis_cycle_aosk.audit import audit
 from oasis_cycle_aosk.data import ManifestDataset
 from oasis_cycle_aosk.samplers import MixedBatchSampler
+
+
+def _load_script_main(filename, module_name):
+    path = Path(__file__).resolve().parents[1] / "scripts" / filename
+    spec = importlib.util.spec_from_file_location(module_name, path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"cannot load {path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.main
 
 
 def _save_rgb(path, value=127, size=(8, 8)):
@@ -115,7 +127,6 @@ def test_mixed_sampler_has_fixed_composition_and_is_deterministic():
 
 
 def test_normal_fraction_does_not_increase_optimizer_steps_per_epoch():
-    # Crack-only baseline with 24 samples, batch 8 has exactly 3 updates.
     mixed = MixedBatchSampler(24, 100, batch_size=8, normal_fraction=0.25, seed=1)
     assert len(mixed) == 3
     assert mixed.samples_per_epoch == 24
@@ -183,8 +194,10 @@ def test_actual_aosk_loss_backpropagates_to_logits():
     assert float(logits.grad.abs().sum()) > 0.0
 
 
-def test_exclude_file_removes_cross_label_duplicate_from_normal_train(tmp_path):
-    from scripts.add_normal_rgb_to_manifest import main as build_manifest  # type: ignore
+def test_exclude_file_removes_cross_label_duplicate_from_normal_train(tmp_path, monkeypatch):
+    build_manifest = _load_script_main(
+        "add_normal_rgb_to_manifest.py", "add_normal_rgb_to_manifest_script"
+    )
 
     normal_root = tmp_path / "Non-cracked"
     normal_root.mkdir()
@@ -213,21 +226,23 @@ def test_exclude_file_removes_cross_label_duplicate_from_normal_train(tmp_path):
         json.dumps({"excluded_normal_candidates": [{"path": str(dup)}]})
     )
     out = tmp_path / "manifest_with_normal.jsonl"
-    import sys
 
-    sys.argv = [
-        "add_normal_rgb_to_manifest",
-        "--canonical-manifest",
-        str(canonical),
-        "--normal-root",
-        str(normal_root),
-        "--out",
-        str(out),
-        "--train-ratio",
-        "1.0",
-        "--exclude-file",
-        str(exclude),
-    ]
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "add_normal_rgb_to_manifest",
+            "--canonical-manifest",
+            str(canonical),
+            "--normal-root",
+            str(normal_root),
+            "--out",
+            str(out),
+            "--train-ratio",
+            "1.0",
+            "--exclude-file",
+            str(exclude),
+        ],
+    )
     build_manifest()
     rows = [json.loads(l) for l in out.read_text().splitlines() if l.strip()]
     normal_rows = [r for r in rows if r.get("is_normal")]
