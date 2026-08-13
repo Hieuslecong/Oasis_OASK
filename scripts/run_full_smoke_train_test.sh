@@ -21,6 +21,10 @@ STUDENT_WIDTH="${STUDENT_WIDTH:-16}"
 DETERMINISM_MODE="${DETERMINISM_MODE:-best_effort}"
 RUN_UNIT_TESTS="${RUN_UNIT_TESTS:-1}"
 PREPARE_DATA="${PREPARE_DATA:-1}"
+SMOKE_CRITIC_EPOCHS="${SMOKE_CRITIC_EPOCHS:-10}"
+SMOKE_EPOCHS="${SMOKE_EPOCHS:-2}"
+SMOKE_WARMUP="${SMOKE_WARMUP:-0}"
+SMOKE_RAMP_EPOCHS="${SMOKE_RAMP_EPOCHS:-1}"
 SMOKE_TEST_VAL_SAMPLES="${SMOKE_TEST_VAL_SAMPLES:-8}"
 SMOKE_TEST_NORMAL_SAMPLES="${SMOKE_TEST_NORMAL_SAMPLES:-4}"
 
@@ -51,6 +55,8 @@ echo "DATA_ROOT=$DATA_ROOT"
 echo "SEED=$SEED"
 echo "NORMAL_FRACTION=$NORMAL_FRACTION"
 echo "STUDENT_KIND=$STUDENT_KIND"
+echo "SMOKE_CRITIC_EPOCHS=$SMOKE_CRITIC_EPOCHS"
+echo "SMOKE_EPOCHS=$SMOKE_EPOCHS"
 echo "DETERMINISM_MODE=$DETERMINISM_MODE"
 echo "CANONICAL_TEST_POLICY=CLOSED"
 
@@ -123,7 +129,9 @@ mkdir -p "$(dirname "$STUDENT_INIT")"
   --out "$STUDENT_INIT"
 
 # ---------------------------------------------------------------------------
-# 3. Critic + four-arm training smoke (2 epochs each in run_smoke.sh).
+# 3. Critic + four-arm training smoke.
+#    Critic defaults to 10 epochs because the strict C1-C9/normal qualification
+#    gate is intentionally not bypassed in smoke mode. Students default to 2.
 # ---------------------------------------------------------------------------
 echo "== SMOKE 3/7 critic + S0/S1/S2/S3 training =="
 CONFIG="$CONFIG" \
@@ -131,6 +139,10 @@ NORMAL_FRACTION="$NORMAL_FRACTION" \
 RUN_ROOT="$RUN_ROOT" \
 PYTHON="$PYTHON" \
 DETERMINISM_MODE="$DETERMINISM_MODE" \
+SMOKE_CRITIC_EPOCHS="$SMOKE_CRITIC_EPOCHS" \
+SMOKE_EPOCHS="$SMOKE_EPOCHS" \
+SMOKE_WARMUP="$SMOKE_WARMUP" \
+SMOKE_RAMP_EPOCHS="$SMOKE_RAMP_EPOCHS" \
 bash "$PACKAGE_ROOT/scripts/run_smoke.sh" \
   "$TRAIN_MANIFEST" \
   "$GATE0_CERTIFICATE" \
