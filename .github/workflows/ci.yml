@@ -34,3 +34,7 @@ jobs:
           bash -n scripts/run_lightweight_smoke.sh
           bash -n scripts/run_three_seeds.sh
           bash -n scripts/evaluate_checkpoint.sh
+          bash -n scripts/run_validation_arms.sh
+          bash -n scripts/run_validation_eval.sh
+          bash -n scripts/run_training_ready.sh
+          bash -n scripts/run_final_test.sh

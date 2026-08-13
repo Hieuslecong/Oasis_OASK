@@ -1,161 +1,182 @@
-import csv, json, hashlib, datetime
+#!/usr/bin/env python3
+"""Build a fail-closed OmniCrack30k CleanEval derivative.
+
+Scientific policy:
+- raw/canonical files are never modified;
+- lineage/RGB/mask leakage must already be repaired by clean_manifest.py;
+- native-empty crack-source targets are kept only with an explicit row-level N0
+  certification; N1/N2/N3/unreviewed rows are excluded conservatively;
+- no model prediction or test metric is used;
+- hashes are generated from the exact final files in one run.
+"""
+import argparse
+import csv
+import hashlib
+import json
+import sys
+from collections import Counter
 from pathlib import Path
-from collections import defaultdict
+
 import numpy as np
 from PIL import Image
 
-# Builds OmniCrack30k-CleanEval-v1 cleaned canonical benchmark manifests.
-# Policy (user-mandated, mixed certified-repair, firewall fail-closed):
-#   TRAIN: quarantine uncertified native-empty rows from contaminated sources
-#          (BCL train, S/S2DS train, GAPS train) -> QUARANTINE_UNCERTIFIED_EMPTY_GT
-#   VAL/TEST: exclude individually-verified N1 rows (invalid_eval_annotations.csv)
-#   Certified N0 empty targets get empty_target_status="verified_no_crack" (both train+eval).
-#   Cross-split identical non-empty mask leakage -> LEAK_EXCLUDED (HARD FAIL firewall).
-#   NO raw data modified; NO model used anywhere.
+REPO = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(REPO / "src"))
+from oasis_cycle_aosk.audit import audit  # noqa: E402
 
-EXP = Path("/hdd1/hieulc/Oasis_AOSK/experiments/local_hy3_validation_20260813_002205")
-CLEAN = EXP / "data" / "cleaned" / "manifest_clean.jsonl"
-AUDIT_DIR = EXP / "data" / "empty_mask_audit"
-OUT = EXP / "data" / "cleaneval_v1"
-OUT.mkdir(parents=True, exist_ok=True)
-
-CONTAM_TRAIN_SOURCES = {"BCL", "S", "GAPS"}
+SPLITS = ("train", "val", "test")
 
 
-def mask_digest(path):
+def sha256_file(path):
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def mask_foreground(path):
     arr = np.asarray(Image.open(path).convert("L"), dtype=np.uint8)
-    b = (arr > 127).astype(np.uint8)
-    return hashlib.sha256(np.ascontiguousarray(b)).hexdigest(), int(b.sum())
+    return int((arr > 127).sum())
 
 
-def row_id_of(r):
-    return r.get("image")
+def verdict_code(value):
+    value = str(value or "").strip().upper()
+    for code in ("N0", "N1", "N2", "N3"):
+        if value == code or value.startswith(code + "_"):
+            return code
+    return None
 
 
-# --- empty mask audit (per-row): category marks ALL native-empty -----------
-empty_all = list(csv.DictReader(open(AUDIT_DIR / "empty_mask_audit.csv")))
-empty_images = {e["image"]: e for e in empty_all}
-empty_train_contam = {e["image"] for e in empty_all
-                      if e["split"] == "train" and e["source_id"] in CONTAM_TRAIN_SOURCES}
+def load_certifications(path):
+    if not path:
+        return {}
+    rows = list(csv.DictReader(open(path, newline="")))
+    result = {}
+    for r in rows:
+        key = str(Path(r["image"]).resolve())
+        code = verdict_code(r.get("verdict"))
+        if code is None:
+            raise ValueError(f"invalid certification verdict for {key}")
+        if key in result:
+            raise ValueError(f"duplicate certification for {key}")
+        result[key] = {**r, "verdict": code}
+    return result
 
-# --- explicit row-level N1 eval exclusions ---------------------------------
-inv_p = AUDIT_DIR / "invalid_eval_annotations.csv"
-n1_excl = {}
-if inv_p.exists():
-    for e in csv.DictReader(open(inv_p)):
-        n1_excl[e["image"]] = e
 
-# --- certified N0 = native-empty NOT invalid-eval NOT contam-train N1 -----
-# reconstructs certification_report.json N0_by_split (train 34, val 294, test 635)
-certified_n0 = {}
-for img, e in empty_images.items():
-    if e["split"] in ("val", "test") and img in n1_excl:
-        continue
-    if e["split"] == "train" and img in empty_train_contam:
-        continue
-    certified_n0[img] = e
+def build(input_path, out_dir, certification_csv=None, resize_size=256):
+    out = Path(out_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    cert = load_certifications(certification_csv)
+    rows = [json.loads(l) for l in Path(input_path).read_text().splitlines() if l.strip()]
 
-# --- cross-split identical non-empty mask leakage (HARD FAIL) --------------
-rows = [json.loads(l) for l in open(CLEAN) if l.strip()]
-leak_groups = defaultdict(list)
-for r in rows:
-    try:
-        d, nf = mask_digest(r["mask"])
-    except Exception:
-        continue
-    if nf == 0:
-        continue
-    leak_groups[d].append(r)
-leak_excl = {}
-for d, g in leak_groups.items():
-    splits = {r["split"] for r in g}
-    if len(splits) > 1:
-        for r in g:
-            leak_excl[row_id_of(r)] = r
+    kept = []
+    exclusions = []
+    used_cert = set()
 
-# --- derive, excluding in priority order -----------------------------------
-train_out, eval_out = [], []
-stat = {"train": 0, "val": 0, "test": 0}
-for r in rows:
-    img, sp = row_id_of(r), r["split"]
-    if img in leak_excl:
-        r2 = dict(r)
-        r2["exclusion"] = "LEAK_EXCLUDED"
-        r2["exclusion_reason"] = "cross-split identical non-empty mask leakage"
-        stat["%s_leak" % sp] = stat.get("%s_leak" % sp, 0) + 1
-        continue
-    if sp in ("val", "test"):
-        if img in n1_excl:
-            r2 = dict(r)
-            r2["exclusion"] = "N1_EXCLUDED"
-            r2["exclusion_reason"] = "individually verified bad GT annotation"
-            stat["%s_n1" % sp] = stat.get("%s_n1" % sp, 0) + 1
+    for r in rows:
+        sp = r.get("split")
+        if sp not in SPLITS:
             continue
-        if img in certified_n0:
+        if r.get("is_normal") is True:
+            kept.append(dict(r))
+            continue
+        mp = r.get("mask")
+        if not mp or not Path(mp).exists():
+            raise RuntimeError(f"missing mask for crack-source row: {r.get('image')}")
+        fg = mask_foreground(mp)
+        if fg > 0:
+            kept.append(dict(r))
+            continue
+
+        key = str(Path(r["image"]).resolve())
+        decision = cert.get(key)
+        if decision and decision["verdict"] == "N0":
+            used_cert.add(key)
             r2 = dict(r)
             r2["empty_target_status"] = "verified_no_crack"
-            r2["empty_target_decision"] = "certified_N0_empty_gt"
-            eval_out.append(r2)
+            r2["empty_target_certification"] = {
+                "verdict": "N0",
+                "reviewer": decision.get("reviewer"),
+                "reason": decision.get("reason"),
+            }
+            kept.append(r2)
         else:
-            eval_out.append(r)
-        stat[sp] = stat.get(sp, 0) + 1
-    elif sp == "train":
-        if img in empty_train_contam and not r.get("is_normal"):
-            r2 = dict(r)
-            r2["exclusion"] = "QUARANTINE_UNCERTIFIED_EMPTY_GT"
-            r2["exclusion_reason"] = "uncertified empty GT from contaminated train source"
-            stat["train_q"] = stat.get("train_q", 0) + 1
-            continue
-        if img in certified_n0:
-            r2 = dict(r)
-            r2["empty_target_status"] = "verified_no_crack"
-            r2["empty_target_decision"] = "certified_N0_empty_gt"
-            train_out.append(r2)
-        else:
-            train_out.append(r)
-        stat["train"] = stat.get("train", 0) + 1
-    else:
-        train_out.append(r)
-        stat["train"] = stat.get("train", 0) + 1
+            verdict = decision["verdict"] if decision else "UNREVIEWED"
+            if decision:
+                used_cert.add(key)
+            exclusions.append({
+                "image": r.get("image"),
+                "mask": mp,
+                "split": sp,
+                "source_id": r.get("source_id"),
+                "lineage_id": r.get("lineage_id"),
+                "verdict": verdict,
+                "reason": "native-empty GT not explicitly row-certified N0",
+            })
 
-TRAIN_JSONL = OUT / "manifest_clean_train.jsonl"
-EVAL_JSONL = OUT / "manifest_cleaneval_v1.jsonl"
-with open(TRAIN_JSONL, "w") as f:
-    for r in train_out:
-        f.write(json.dumps(r) + "\n")
-with open(EVAL_JSONL, "w") as f:
-    for r in eval_out:
-        f.write(json.dumps(r) + "\n")
+    full = out / "manifest_cleaneval_v1_full.jsonl"
+    train = out / "manifest_clean_train.jsonl"
+    evalp = out / "manifest_cleaneval_v1.jsonl"
 
-provenance = {
-    "benchmark": "OmniCrack30k-CleanEval-v1",
-    "built_utc": datetime.datetime.utcnow().isoformat() + "Z",
-    "source_canonical": str(CLEAN),
-    "source_lines_total": len(rows),
-    "stats": stat,
-    "leak_excluded_total": len(leak_excl),
-    "leak_groups": {d[:12]: {"splits": sorted({r["split"] for r in g})}
-                    for d, g in leak_groups.items() if len({r["split"] for r in g}) > 1},
-    "train_rows": len(train_out),
-    "eval_rows": len(eval_out),
-    "certified_n0_eval": sum(1 for r in eval_out if r.get("empty_target_status") == "verified_no_crack"),
-    "certified_n0_train": sum(1 for r in train_out if r.get("empty_target_status") == "verified_no_crack"),
-    "policy": "mixed certified-repair; firewall fail-closed; no raw-data modification; no model",
-}
-with open(OUT / "build_provenance.json", "w") as f:
-    json.dump(provenance, f, indent=2)
+    def write_jsonl(path, selected):
+        path.write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in selected) + ("\n" if selected else ""))
 
-with open(OUT / "leakage_excluded_report.txt", "w") as f:
-    f.write("CleanEval-v1 cross-split identical non-empty mask leakage (HARD FAIL) -> LEAK_EXCLUDED\n")
-    f.write("=" * 70 + "\n")
-    for d, g in leak_groups.items():
-        splits = {r["split"] for r in g}
-        if len(splits) <= 1:
-            continue
-        f.write("\n[digest %s] splits=%s rows=%d\n" % (d[:16], sorted(splits), len(g)))
-        for r in g:
-            f.write("   %-6s nf=%-5d %s\n" % (r["split"], mask_digest(r["mask"])[1], r["mask"]))
+    write_jsonl(full, kept)
+    write_jsonl(train, [r for r in kept if r.get("split") == "train"])
+    write_jsonl(evalp, [r for r in kept if r.get("split") in ("val", "test")])
 
-print("=== DERIVE DONE ===")
-print(json.dumps(provenance, indent=2))
-print("Leak report:", OUT / "leakage_excluded_report.txt")
+    ex_path = out / "cleaneval_v1_exclusions.csv"
+    fields = ["image", "mask", "split", "source_id", "lineage_id", "verdict", "reason"]
+    with ex_path.open("w", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=fields)
+        w.writeheader()
+        w.writerows(exclusions)
+
+    errors = audit(full, resize_size=int(resize_size), normal_policy="none")
+    if errors:
+        (out / "gate0_errors.json").write_text(json.dumps(errors, indent=2))
+        raise RuntimeError("G0 FAIL:\n" + "\n".join(errors[:50]))
+
+    hashes = {
+        "manifest_clean_train.jsonl": sha256_file(train),
+        "manifest_cleaneval_v1.jsonl": sha256_file(evalp),
+        "manifest_cleaneval_v1_full.jsonl": sha256_file(full),
+        "cleaneval_v1_exclusions.csv": sha256_file(ex_path),
+    }
+    (out / "cleaneval_v1.sha256").write_text("".join(f"{digest}  {name}\n" for name, digest in hashes.items()))
+
+    split_counts = Counter(r.get("split") for r in kept)
+    report = {
+        "benchmark_name": "OmniCrack30k-CleanEval-v1",
+        "status": "PASS",
+        "source_manifest": str(Path(input_path).resolve()),
+        "source_rows": len(rows),
+        "kept_rows": len(kept),
+        "split_counts": {s: int(split_counts.get(s, 0)) for s in SPLITS},
+        "empty_target_excluded": len(exclusions),
+        "certified_n0_kept": sum(r.get("empty_target_status") == "verified_no_crack" for r in kept),
+        "certification_csv": str(Path(certification_csv).resolve()) if certification_csv else None,
+        "unused_certification_rows": sorted(set(cert) - used_cert),
+        "hashes": hashes,
+        "policy": "fail-closed; explicit row-level N0 only; N1/N2/N3/unreviewed native-empty rows excluded",
+        "test_metrics_opened": False,
+    }
+    (out / "benchmark_freeze.json").write_text(json.dumps(report, indent=2))
+    (out / "build_provenance.json").write_text(json.dumps(report, indent=2))
+    print(json.dumps(report, indent=2))
+    return report
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--input", required=True)
+    ap.add_argument("--out-dir", required=True)
+    ap.add_argument("--certification-csv", default=None)
+    ap.add_argument("--resize-size", type=int, default=256)
+    args = ap.parse_args()
+    build(args.input, args.out_dir, args.certification_csv, args.resize_size)
+
+
+if __name__ == "__main__":
+    main()
