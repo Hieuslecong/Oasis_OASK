@@ -1,0 +1,26 @@
+{
+  "benchmark_name": "OmniCrack30k-CleanEval-v1",
+  "creation_timestamp": "2026-08-13T03:18:14.880457Z",
+  "g0_authoritative": "PASS (full derived manifest, audit --resize-size 256 --normal-policy none)",
+  "g0_full_manifest_sha": "6b960074f32834ea194f137eec8c40b57afee382719d61e8c9f9698cb5ea672f",
+  "train_manifest_sha": "7a1ed5a01a727f0366fb52170d90bb671d0ba8259c7cba2dbd2d2da5846ae17c",
+  "train_rows": 19187,
+  "eval_manifest_sha": "c5a6a7e118d7aaceb033c068feebd04e6dc4dfabd6e4862a25a255790e931cbd",
+  "eval_rows": 7203,
+  "val_rows": 3199,
+  "test_rows": 4004,
+  "certified_true_negative_N0": 905,
+  "counts": {
+    "train_quarantined_contam_empty": 2958,
+    "eval_N1_excluded": 184,
+    "eval_uncert_val": 62,
+    "eval_uncert_test": 122,
+    "nonempty_mask_reuse_excluded": 7,
+    "lineage_leakage_eval_excluded": 133,
+    "train_lineage_leak": 119,
+    "val_test_lineage_leak": 14
+  },
+  "exclusions_csv_sha": "df77065f32bcb48b30f1370c509cd7a5b92bb51ec0403c0285286ab591a10dd4",
+  "lineage_exclusions_csv_sha": "22b7f003167d38aacc31adba38fe78256822f83f0fca9f21e9c39d483164bdf3",
+  "note": "val+test share manifest_cleaneval_v1.jsonl; split identity inside each row. All certified N0 empties carried; uncertified/nonempty-leak/lineage-leak eval rows excluded before training."
+}

@@ -1,0 +1,20 @@
+{
+  "benchmark_name": "OmniCrack30k-CleanEval-v1",
+  "train_clean_rows": 19194,
+  "val_clean_rows": 3215,
+  "test_clean_rows": 4129,
+  "val_N1_excluded": 62,
+  "test_N1_excluded": 122,
+  "total_eval_excluded": 184,
+  "train_quarantined": 2958,
+  "eval_exclusion_breakdown": {
+    "S|val": 62,
+    "S|test": 66,
+    "CSSC|test": 56
+  },
+  "certification_basis": "RGB+GT only; no model prediction or metric",
+  "original_counts": {
+    "val": 3277,
+    "test": 4251
+  }
+}

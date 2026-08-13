@@ -1,0 +1,67 @@
+{
+  "benchmark": "OmniCrack30k-CleanEval-v1",
+  "built_utc": "2026-08-13T03:55:19.258151Z",
+  "source_canonical": "/hdd1/hieulc/Oasis_AOSK/experiments/local_hy3_validation_20260813_002205/data/cleaned/manifest_clean.jsonl",
+  "source_lines_total": 29680,
+  "stats": {
+    "train": 19187,
+    "val": 3213,
+    "test": 4123,
+    "train_q": 2958,
+    "train_leak": 7,
+    "val_n1": 62,
+    "val_leak": 2,
+    "test_leak": 6,
+    "test_n1": 122
+  },
+  "leak_excluded_total": 15,
+  "leak_groups": {
+    "2f49ac9857ab": {
+      "splits": [
+        "test",
+        "train"
+      ]
+    },
+    "5f26fb3fe0b2": {
+      "splits": [
+        "test",
+        "train"
+      ]
+    },
+    "24d5ab97c995": {
+      "splits": [
+        "test",
+        "train"
+      ]
+    },
+    "25e634693dbb": {
+      "splits": [
+        "test",
+        "train"
+      ]
+    },
+    "c77feadf0590": {
+      "splits": [
+        "test",
+        "train"
+      ]
+    },
+    "471f13e07de1": {
+      "splits": [
+        "train",
+        "val"
+      ]
+    },
+    "76b9c5685e99": {
+      "splits": [
+        "test",
+        "val"
+      ]
+    }
+  },
+  "train_rows": 19187,
+  "eval_rows": 7336,
+  "certified_n0_eval": 929,
+  "certified_n0_train": 34,
+  "policy": "mixed certified-repair; firewall fail-closed; no raw-data modification; no model"
+}
