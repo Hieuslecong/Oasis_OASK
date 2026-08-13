@@ -17,6 +17,7 @@ TRAIN_MANIFEST="$EXP_ROOT/data/derived_manifest_with_normal.jsonl"
 INIT="$EXP_ROOT/init/student_init_seed1337.pt"
 CRITIC_DIR="$EXP_ROOT/critic"
 CRITIC="$CRITIC_DIR/critic.pt"
+CRITIC_VALIDATION="$CRITIC_DIR/critic_validation.json"
 mkdir -p "$CLEAN_DIR" "$BENCH_DIR" "$EXP_ROOT/init" "$CRITIC_DIR"
 
 echo "== 1/6 leakage repair (test > val > train) =="
@@ -53,7 +54,7 @@ if [ ! -f "$INIT" ]; then
 fi
 
 if [ "${REUSE_CRITIC:-0}" != "1" ]; then
-  rm -f "$CRITIC"
+  rm -f "$CRITIC" "$CRITIC_VALIDATION"
 fi
 if [ ! -f "$CRITIC" ]; then
   "$PYTHON" -m oasis_cycle_aosk.train_oasis_rc_v2 \
@@ -66,6 +67,32 @@ if [ ! -f "$CRITIC" ]; then
 fi
 
 test -f "$CRITIC"
+test -f "$CRITIC_VALIDATION"
+
+# train_oasis_rc_v2 --mode critic writes validation metrics but intentionally
+# returns before the connected-arm gate. Enforce the exact connected-arm gate
+# here so no student arm consumes GPU when the critic is unqualified.
+"$PYTHON" - "$CRITIC_VALIDATION" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+p = Path(sys.argv[1])
+m = json.loads(p.read_text())
+checks = {
+    "valid_crack_recall>=0.80": float(m.get("valid_crack_recall", 0.0)) >= 0.80,
+    "invalid_recall>=0.90": float(m.get("invalid_recall", 0.0)) >= 0.90,
+    "rgb_pair_drop>=0.05": m.get("rgb_pair_drop") is not None and float(m["rgb_pair_drop"]) >= 0.05,
+    "mask_pair_drop>=0.05": m.get("mask_pair_drop") is not None and float(m["mask_pair_drop"]) >= 0.05,
+    "rgb_pair_samples>0": int(m.get("rgb_pair_samples", 0)) > 0,
+    "mask_pair_samples>0": int(m.get("mask_pair_samples", 0)) > 0,
+}
+failed = [name for name, ok in checks.items() if not ok]
+if failed:
+    print(json.dumps({"critic_gate": "FAIL", "failed": failed, "metrics": m}, indent=2))
+    raise SystemExit(4)
+print(json.dumps({"critic_gate": "PASS", "checks": checks}, indent=2))
+PY
 
 echo "== 6/6 validation-only S0/S1/S2/S3 =="
 if [ "${RUN_ARMS:-1}" = "1" ]; then
@@ -74,7 +101,7 @@ if [ "${RUN_ARMS:-1}" = "1" ]; then
   NORMAL_FRACTION="${NORMAL_FRACTION:-0.25}" \
   "$PACKAGE_ROOT/scripts/run_validation_arms.sh"
 else
-  echo "RUN_ARMS=0: preparation/critic complete; student arms not started."
+  echo "RUN_ARMS=0: preparation + qualified critic complete; student arms not started."
 fi
 
 echo "TRAINING_PIPELINE_READY"
