@@ -339,6 +339,8 @@ Student histories separately log segmentation, RC, weighted RC, AOSK, weighted A
 
 GitHub CI checks installation, compileall, pytest and shell syntax. Regression tests include a real-file CPU pipeline smoke using actual PNG images/masks and explicit tests for dataset-byte binding, threshold-forward count, final-test authorization, C1-C9 corruption semantics and critic gates.
 
+The final code-level acceptance run for implementation 2.0.1 is GitHub Actions **#161**: package install PASS, compile PASS, **47/47 pytest PASS**, and shell syntax PASS for every canonical runner.
+
 GitHub CI cannot certify the user's `/hdd1/...` dataset or actual A30 GPU. The final acceptance step before claiming experimental results is therefore:
 
 ```text
