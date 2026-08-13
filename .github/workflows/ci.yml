@@ -36,5 +36,7 @@ jobs:
           bash -n scripts/evaluate_checkpoint.sh
           bash -n scripts/run_validation_arms.sh
           bash -n scripts/run_validation_eval.sh
+          bash -n scripts/prepare_real_data.sh
           bash -n scripts/run_training_ready.sh
+          bash -n scripts/run_all_seeds.sh
           bash -n scripts/run_final_test.sh
