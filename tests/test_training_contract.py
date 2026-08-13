@@ -1,45 +1,234 @@
-import copy,hashlib
+import copy
+import hashlib
 from types import SimpleNamespace
-import pytest,torch
+
+import pytest
+torch = pytest.importorskip("torch")
+
 from oasis_cycle_aosk.aosk import oriented_consistency_loss
 from oasis_cycle_aosk.models import MultiScaleLightweightSegmenter
-from oasis_cycle_aosk.train_oasis_rc_v2 import augment,build_targets,load_student_init,make_corrupted_mask,make_generator,sha256_file,validate_loaded_critic
-from oasis_rc_v2.checkpoint import CHECKPOINT_SCHEMA,EXPERIMENT_ID,IMPLEMENTATION_VERSION,METHOD_VERSION
+from oasis_cycle_aosk.train_oasis_rc_v2 import (
+    augment,
+    build_targets,
+    load_student_init,
+    make_corrupted_mask,
+    make_generator,
+    sha256_file,
+    validate_loaded_critic,
+)
+from oasis_rc_v2.checkpoint import (
+    CHECKPOINT_SCHEMA,
+    EXPERIMENT_ID,
+    IMPLEMENTATION_VERSION,
+    METHOD_VERSION,
+)
 from oasis_rc_v2.critic import OASISRCv2Critic
-from oasis_rc_v2.losses import segmentation_loss,oasis_rc_student_loss_v2
+from oasis_rc_v2.losses import segmentation_loss, oasis_rc_student_loss_v2
 
-def flat(loss,params,retain=False):
- g=torch.autograd.grad(loss,params,retain_graph=retain,allow_unused=True);return torch.cat([(torch.zeros_like(p) if x is None else x).reshape(-1) for p,x in zip(params,g)])
+
+def flat(loss, params, retain=False):
+    grads = torch.autograd.grad(
+        loss, params, retain_graph=retain, allow_unused=True
+    )
+    return torch.cat(
+        [
+            (torch.zeros_like(p) if g is None else g).reshape(-1)
+            for p, g in zip(params, grads)
+        ]
+    )
+
+
 def fixture():
- torch.manual_seed(123);s=MultiScaleLightweightSegmenter(width=4);x=torch.randn(2,3,32,32);y=torch.zeros(2,1,32,32);y[:,:,14:18,4:28]=1;return s,x,y
+    torch.manual_seed(123)
+    student = MultiScaleLightweightSegmenter(width=4)
+    x = torch.randn(2, 3, 32, 32)
+    y = torch.zeros(2, 1, 32, 32)
+    y[:, :, 14:18, 4:28] = 1
+    return student, x, y
+
+
 def test_s0_equals_s2_when_lambda_aosk_zero():
- s,x,y=fixture();p=[z for z in s.parameters() if z.requires_grad];l=s(x);seg=segmentation_loss(l,y);a=oriented_consistency_loss(l,x,y);assert torch.equal(flat(seg,p,True),flat(seg+0*a,p))
+    student, x, y = fixture()
+    params = [p for p in student.parameters() if p.requires_grad]
+    logits = student(x)
+    seg = segmentation_loss(logits, y)
+    aosk = oriented_consistency_loss(logits, x, y)
+    assert torch.equal(flat(seg, params, True), flat(seg + 0 * aosk, params))
+
+
 def test_s1_equals_s3_when_lambda_aosk_zero():
- s,x,y=fixture();p=[z for z in s.parameters() if z.requires_grad];c=OASISRCv2Critic(width=4).eval()
- for z in c.parameters():z.requires_grad_(False)
- l=s(x);seg=segmentation_loss(l,y);pred=l.sigmoid();wrong,_=make_corrupted_mask(y,generator=make_generator(torch.device("cpu"),17))
- with torch.no_grad():gt=c(x,y);co=c(x,wrong)
- rc,e=oasis_rc_student_loss_v2(c(x,pred),gt,co,pred,y);a=oriented_consistency_loss(l,x,y);assert torch.equal(flat(seg+.001*rc,p,True),flat(seg+.001*rc+0*a,p));assert all(k in e for k in ("e_pred","e_gt","e_corrupted","delta_pred_gt","delta_pred_corrupted"))
+    student, x, y = fixture()
+    params = [p for p in student.parameters() if p.requires_grad]
+    critic = OASISRCv2Critic(width=4).eval()
+    for parameter in critic.parameters():
+        parameter.requires_grad_(False)
+    logits = student(x)
+    seg = segmentation_loss(logits, y)
+    pred = logits.sigmoid()
+    wrong, _ = make_corrupted_mask(
+        y, generator=make_generator(torch.device("cpu"), 17)
+    )
+    with torch.no_grad():
+        gt = critic(x, y)
+        corrupt = critic(x, wrong)
+    rc, extras = oasis_rc_student_loss_v2(
+        critic(x, pred), gt, corrupt, pred, y
+    )
+    aosk = oriented_consistency_loss(logits, x, y)
+    assert torch.equal(
+        flat(seg + 0.001 * rc, params, True),
+        flat(seg + 0.001 * rc + 0 * aosk, params),
+    )
+    assert all(
+        key in extras
+        for key in (
+            "e_pred",
+            "e_gt",
+            "e_corrupted",
+            "delta_pred_gt",
+            "delta_pred_corrupted",
+        )
+    )
+
+
 def test_rc_corruption_rng_does_not_change_augmentation_sequence():
- x=torch.linspace(-1,1,2*3*16*16).reshape(2,3,16,16);y=torch.zeros(2,1,16,16);y[:,:,6:10,3:13]=1;c=make_generator(torch.device("cpu"),777);r=make_generator(torch.device("cpu"),777);cg=make_generator(torch.device("cpu"),999);c1=augment(x.clone(),y.clone(),c);c2=augment(x.clone(),y.clone(),c);r1=augment(x.clone(),y.clone(),r);make_corrupted_mask(y,generator=cg);r2=augment(x.clone(),y.clone(),r);assert torch.equal(c1[0],r1[0]) and torch.equal(c2[0],r2[0])
+    x = torch.linspace(-1, 1, 2 * 3 * 16 * 16).reshape(2, 3, 16, 16)
+    y = torch.zeros(2, 1, 16, 16)
+    y[:, :, 6:10, 3:13] = 1
+    control = make_generator(torch.device("cpu"), 777)
+    connected = make_generator(torch.device("cpu"), 777)
+    corruption = make_generator(torch.device("cpu"), 999)
+    c1 = augment(x.clone(), y.clone(), control)
+    c2 = augment(x.clone(), y.clone(), control)
+    r1 = augment(x.clone(), y.clone(), connected)
+    make_corrupted_mask(y, generator=corruption)
+    r2 = augment(x.clone(), y.clone(), connected)
+    assert torch.equal(c1[0], r1[0]) and torch.equal(c1[1], r1[1])
+    assert torch.equal(c2[0], r2[0]) and torch.equal(c2[1], r2[1])
+
+
 def test_noop_target_is_pair_valid():
- m=torch.zeros(2,1,8,8);_,mm,pv=build_targets(m,torch.zeros_like(m));assert float(mm.sum())==0 and torch.equal(pv,torch.ones_like(pv))
+    mask = torch.zeros(2, 1, 8, 8)
+    _, mismatch, pair_valid = build_targets(mask, torch.zeros_like(mask))
+    assert float(mismatch.sum()) == 0
+    assert torch.equal(pair_valid, torch.ones_like(pair_valid))
+
+
 def test_two_step_zero_rc_equivalence():
- base,x,y=fixture();a=copy.deepcopy(base);b=copy.deepcopy(base);c=OASISRCv2Critic(width=4).eval()
- for p in c.parameters():p.requires_grad_(False)
- oa=torch.optim.AdamW(a.parameters(),lr=1e-4);ob=torch.optim.AdamW(b.parameters(),lr=1e-4);ga=make_generator(torch.device("cpu"),101);gb=make_generator(torch.device("cpu"),101);gc=make_generator(torch.device("cpu"),202)
- for _ in range(2):
-  xa,ya=augment(x.clone(),y.clone(),ga);xb,yb=augment(x.clone(),y.clone(),gb);la=segmentation_loss(a(xa),ya);oa.zero_grad();la.backward();oa.step();log=b(xb);seg=segmentation_loss(log,yb);pred=log.sigmoid();wrong,_=make_corrupted_mask(yb,generator=gc)
-  with torch.no_grad():gt=c(xb,yb);co=c(xb,wrong)
-  rc,_=oasis_rc_student_loss_v2(c(xb,pred),gt,co,pred,yb);lb=seg+0*rc;ob.zero_grad();lb.backward();ob.step()
- for (n1,t1),(n2,t2) in zip(a.state_dict().items(),b.state_dict().items()):assert n1==n2 and torch.equal(t1,t2),n1
+    base, x, y = fixture()
+    control = copy.deepcopy(base)
+    connected = copy.deepcopy(base)
+    critic = OASISRCv2Critic(width=4).eval()
+    for parameter in critic.parameters():
+        parameter.requires_grad_(False)
+    opt_control = torch.optim.AdamW(control.parameters(), lr=1e-4)
+    opt_connected = torch.optim.AdamW(connected.parameters(), lr=1e-4)
+    gen_control = make_generator(torch.device("cpu"), 101)
+    gen_connected = make_generator(torch.device("cpu"), 101)
+    gen_corrupt = make_generator(torch.device("cpu"), 202)
+    for _ in range(2):
+        xc, yc = augment(x.clone(), y.clone(), gen_control)
+        xr, yr = augment(x.clone(), y.clone(), gen_connected)
+        loss_control = segmentation_loss(control(xc), yc)
+        opt_control.zero_grad()
+        loss_control.backward()
+        opt_control.step()
+
+        logits = connected(xr)
+        seg = segmentation_loss(logits, yr)
+        pred = logits.sigmoid()
+        wrong, _ = make_corrupted_mask(yr, generator=gen_corrupt)
+        with torch.no_grad():
+            gt = critic(xr, yr)
+            corrupt = critic(xr, wrong)
+        rc, _ = oasis_rc_student_loss_v2(
+            critic(xr, pred), gt, corrupt, pred, yr
+        )
+        loss_connected = seg + 0 * rc
+        opt_connected.zero_grad()
+        loss_connected.backward()
+        opt_connected.step()
+
+    for (name_a, tensor_a), (name_b, tensor_b) in zip(
+        control.state_dict().items(), connected.state_dict().items()
+    ):
+        assert name_a == name_b
+        assert torch.equal(tensor_a, tensor_b), name_a
+
+
 def test_student_init_seed_mismatch_is_rejected(tmp_path):
- s=MultiScaleLightweightSegmenter(width=4);setattr(s,"_oasis_width",4);p=tmp_path/"i.pt";torch.save({"student":s.state_dict(),"student_kind":"multiscale","student_width":4,"seed":1337},p)
- with pytest.raises(ValueError,match="seed mismatch"):load_student_init(s,p,2027)
+    student = MultiScaleLightweightSegmenter(width=4)
+    setattr(student, "_oasis_width", 4)
+    path = tmp_path / "init.pt"
+    torch.save(
+        {
+            "student": student.state_dict(),
+            "student_kind": "multiscale",
+            "student_width": 4,
+            "seed": 1337,
+        },
+        path,
+    )
+    with pytest.raises(ValueError, match="seed mismatch"):
+        load_student_init(student, path, 2027)
+
+
 def test_critic_provenance_and_schema_fail_closed(tmp_path):
- m=tmp_path/"m";m.write_text("x");args=SimpleNamespace(manifest=str(m),normal_fraction=.25,normal_critic_weight=1.0);cfg={"seed":1337,"image_size":256};saved={"checkpoint_schema":CHECKPOINT_SCHEMA,"experiment_id":EXPERIMENT_ID,"method_version":METHOD_VERSION,"implementation_version":IMPLEMENTATION_VERSION,"critic":{},"width":8,"config":cfg,"manifest_file_sha256":sha256_file(m),"normal_fraction":.25,"normal_critic_weight":1.0};validate_loaded_critic(saved,args,cfg);bad=dict(saved);bad.pop("checkpoint_schema")
- with pytest.raises(ValueError,match="legacy checkpoint rejected"):validate_loaded_critic(bad,args,cfg)
- bad2=dict(saved);bad2["implementation_version"]="legacy"
- with pytest.raises(ValueError,match="implementation_version"):validate_loaded_critic(bad2,args,cfg)
+    manifest = tmp_path / "manifest.jsonl"
+    manifest.write_text("canonical-bytes\n")
+    dataset_sha = "d" * 64
+    args = SimpleNamespace(
+        manifest=str(manifest),
+        normal_fraction=0.25,
+        normal_critic_weight=1.0,
+        crack_dice_weight=1.0,
+        mismatch_weight=1.0,
+        pair_weight=0.25,
+        rgb_mask_weight=1.0,
+        _dataset_content_sha256=dataset_sha,
+    )
+    cfg = {"seed": 1337, "image_size": 256}
+    training_hparams = {
+        "crack_dice_weight": 1.0,
+        "mismatch_weight": 1.0,
+        "pair_weight": 0.25,
+        "rgb_mask_weight": 1.0,
+        "normal_critic_weight": 1.0,
+        "normal_fraction": 0.25,
+    }
+    saved = {
+        "checkpoint_schema": CHECKPOINT_SCHEMA,
+        "experiment_id": EXPERIMENT_ID,
+        "method_version": METHOD_VERSION,
+        "implementation_version": IMPLEMENTATION_VERSION,
+        "critic": {},
+        "width": 8,
+        "config": cfg,
+        "manifest_file_sha256": sha256_file(manifest),
+        "dataset_content_sha256": dataset_sha,
+        "normal_fraction": 0.25,
+        "normal_critic_weight": 1.0,
+        "training_hparams": training_hparams,
+    }
+    validate_loaded_critic(saved, args, cfg)
+
+    bad = dict(saved)
+    bad.pop("checkpoint_schema")
+    with pytest.raises(ValueError, match="legacy checkpoint rejected"):
+        validate_loaded_critic(bad, args, cfg)
+
+    bad_impl = dict(saved)
+    bad_impl["implementation_version"] = "legacy"
+    with pytest.raises(ValueError, match="implementation_version"):
+        validate_loaded_critic(bad_impl, args, cfg)
+
+    bad_data = dict(saved)
+    bad_data["dataset_content_sha256"] = "0" * 64
+    with pytest.raises(ValueError, match="dataset-content"):
+        validate_loaded_critic(bad_data, args, cfg)
+
+
 def test_sha256_exact(tmp_path):
- p=tmp_path/"x";p.write_bytes(b"a");assert sha256_file(p)==hashlib.sha256(b"a").hexdigest()
+    path = tmp_path / "x"
+    path.write_bytes(b"a")
+    assert sha256_file(path) == hashlib.sha256(b"a").hexdigest()
