@@ -4,7 +4,7 @@ import pytest,torch
 from oasis_cycle_aosk.aosk import oriented_consistency_loss
 from oasis_cycle_aosk.models import MultiScaleLightweightSegmenter
 from oasis_cycle_aosk.train_oasis_rc_v2 import augment,build_targets,load_student_init,make_corrupted_mask,make_generator,sha256_file,validate_loaded_critic
-from oasis_rc_v2.checkpoint import CHECKPOINT_SCHEMA,EXPERIMENT_ID,METHOD_VERSION
+from oasis_rc_v2.checkpoint import CHECKPOINT_SCHEMA,EXPERIMENT_ID,IMPLEMENTATION_VERSION,METHOD_VERSION
 from oasis_rc_v2.critic import OASISRCv2Critic
 from oasis_rc_v2.losses import segmentation_loss,oasis_rc_student_loss_v2
 
@@ -37,7 +37,9 @@ def test_student_init_seed_mismatch_is_rejected(tmp_path):
  s=MultiScaleLightweightSegmenter(width=4);setattr(s,"_oasis_width",4);p=tmp_path/"i.pt";torch.save({"student":s.state_dict(),"student_kind":"multiscale","student_width":4,"seed":1337},p)
  with pytest.raises(ValueError,match="seed mismatch"):load_student_init(s,p,2027)
 def test_critic_provenance_and_schema_fail_closed(tmp_path):
- m=tmp_path/"m";m.write_text("x");args=SimpleNamespace(manifest=str(m),normal_fraction=.25,normal_critic_weight=1.0);cfg={"seed":1337,"image_size":256};saved={"checkpoint_schema":CHECKPOINT_SCHEMA,"experiment_id":EXPERIMENT_ID,"method_version":METHOD_VERSION,"critic":{},"width":8,"config":cfg,"manifest_file_sha256":sha256_file(m),"normal_fraction":.25,"normal_critic_weight":1.0};validate_loaded_critic(saved,args,cfg);bad=dict(saved);bad.pop("checkpoint_schema")
+ m=tmp_path/"m";m.write_text("x");args=SimpleNamespace(manifest=str(m),normal_fraction=.25,normal_critic_weight=1.0);cfg={"seed":1337,"image_size":256};saved={"checkpoint_schema":CHECKPOINT_SCHEMA,"experiment_id":EXPERIMENT_ID,"method_version":METHOD_VERSION,"implementation_version":IMPLEMENTATION_VERSION,"critic":{},"width":8,"config":cfg,"manifest_file_sha256":sha256_file(m),"normal_fraction":.25,"normal_critic_weight":1.0};validate_loaded_critic(saved,args,cfg);bad=dict(saved);bad.pop("checkpoint_schema")
  with pytest.raises(ValueError,match="legacy checkpoint rejected"):validate_loaded_critic(bad,args,cfg)
+ bad2=dict(saved);bad2["implementation_version"]="legacy"
+ with pytest.raises(ValueError,match="implementation_version"):validate_loaded_critic(bad2,args,cfg)
 def test_sha256_exact(tmp_path):
  p=tmp_path/"x";p.write_bytes(b"a");assert sha256_file(p)==hashlib.sha256(b"a").hexdigest()
