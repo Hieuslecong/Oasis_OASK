@@ -47,6 +47,31 @@ def _random_blob(single, generator, kernel=11):
     return (blob > 0.5).float()
 
 
+def _texture_fp_blob(single, image_single, generator, kernel=11):
+    """Place a false-positive blob preferentially on high-texture RGB background."""
+    if image_single is None:
+        return _random_blob(single, generator, kernel=kernel)
+    if image_single.ndim != 4 or image_single.shape[0] != 1 or image_single.shape[1] != 3:
+        raise ValueError("image_single must be 1x3xHxW")
+    gray = image_single.mean(1, keepdim=True)
+    gx = F.pad((gray[..., 1:] - gray[..., :-1]).abs(), (0, 1, 0, 0))
+    gy = F.pad((gray[..., 1:, :] - gray[..., :-1, :]).abs(), (0, 0, 0, 1))
+    texture = gx + gy
+    background = 1.0 - F.max_pool2d(single, 7, 1, 3).clamp(0, 1)
+    score = texture * background
+    jitter = torch.rand(score.shape, device=score.device, generator=generator) * 1e-6
+    flat = (score + jitter).flatten()
+    if float(score.max()) <= 0.0:
+        return _random_blob(single, generator, kernel=kernel)
+    index = int(flat.argmax().item())
+    h, w = single.shape[-2:]
+    y, x = divmod(index, w)
+    seed = torch.zeros_like(single)
+    seed[..., y, x] = 1.0
+    blob = F.max_pool2d(seed, kernel, 1, kernel // 2)
+    return (blob > 0.5).float()
+
+
 def _local_break(single, generator):
     out = single.clone()
     coords = torch.nonzero(single[0, 0] > 0.5, as_tuple=False)
@@ -80,16 +105,13 @@ def _wrong_connection(single, generator):
     return (out > 0.5).float()
 
 
-def _nonself_donor(mask, index, crack_indices, generator):
+def _nonself_crack_donor(mask, index, crack_indices, generator):
     candidates = crack_indices[crack_indices != index]
-    if candidates.numel() == 0:
-        candidates = torch.arange(mask.shape[0], device=mask.device)
-        candidates = candidates[candidates != index]
     if candidates.numel() == 0:
         return None, None
     pos = _randint(0, candidates.numel(), mask.device, generator)
     donor_index = int(candidates[pos].item())
-    return mask[donor_index:donor_index + 1].clone(), donor_index
+    return mask[donor_index : donor_index + 1].clone(), donor_index
 
 
 def _iou(a, b):
@@ -103,12 +125,12 @@ def _iou(a, b):
 
 
 def _acceptable(candidate, original, max_iou, min_diff_pixels):
-    diff = int((candidate.ne(original)).sum().item())
+    diff = int((candidate != original).sum().item())
     return diff >= int(min_diff_pixels) or _iou(candidate, original) <= float(max_iou)
 
 
 def _force_difference(candidate, original, generator):
-    if int(candidate.ne(original).sum().item()) > 0:
+    if int((candidate != original).sum().item()) > 0:
         return candidate
     out = candidate.clone()
     h, w = out.shape[-2:]
@@ -118,8 +140,8 @@ def _force_difference(candidate, original, generator):
     return out
 
 
-def _apply(kind, mask, i, true_normal, crack_indices, generator):
-    original = mask[i:i + 1]
+def _apply(kind, mask, i, crack_indices, generator, image=None):
+    original = mask[i : i + 1]
     h, w = original.shape[-2:]
     donor_index = None
 
@@ -135,22 +157,25 @@ def _apply(kind, mask, i, true_normal, crack_indices, generator):
     elif kind == 3:
         candidate = _local_break(original, generator)
     elif kind == 4:
-        if _randint(0, 2, mask.device, generator) == 0:
-            candidate = F.max_pool2d(original, 7, 1, 3)
-        else:
-            candidate = -F.max_pool2d(-original, 7, 1, 3)
+        candidate = (
+            F.max_pool2d(original, 7, 1, 3)
+            if _randint(0, 2, mask.device, generator) == 0
+            else -F.max_pool2d(-original, 7, 1, 3)
+        )
     elif kind == 5:
         candidate = _wrong_connection(original, generator)
-    elif kind == 6:
-        candidate, donor_index = _nonself_donor(mask, i, crack_indices, generator)
+    elif kind in (6, 7):
+        candidate, donor_index = _nonself_crack_donor(mask, i, crack_indices, generator)
         if candidate is None:
             candidate = _wrong_connection(original, generator)
-    elif kind == 7:
-        candidate, donor_index = _nonself_donor(mask, i, crack_indices, generator)
-        if candidate is None or float(candidate.sum()) == 0.0:
-            candidate = _random_blob(original, generator, kernel=7)
+            if int((candidate != original).sum().item()) == 0:
+                candidate = _random_blob(original, generator, kernel=7)
     else:
-        candidate = torch.maximum(original, _random_blob(original, generator, kernel=11))
+        image_single = None if image is None else image[i : i + 1]
+        candidate = torch.maximum(
+            original,
+            _texture_fp_blob(original, image_single, generator, kernel=11),
+        )
 
     candidate = (candidate > 0.5).float()
     return candidate, donor_index
@@ -165,14 +190,18 @@ def make_corrupted_mask(
     max_attempts=12,
     forced_kinds=None,
     return_meta=False,
+    image=None,
 ):
     """Generate one certified hard negative per sample.
 
-    Invariants: online C1--C9 only, non-self donor masks, non-empty changes,
-    IoU/minimum-difference qualification, and no circular ``torch.roll``.
+    Invariants: online C1--C9 only, non-self crack donors, non-empty changes,
+    IoU/minimum-difference qualification, no circular ``torch.roll``, and a
+    texture-guided C9 when RGB is supplied.
     """
     if mask.ndim != 4 or mask.shape[1] != 1:
         raise ValueError("mask must be Bx1xHxW")
+    if image is not None and (image.ndim != 4 or image.shape[0] != mask.shape[0]):
+        raise ValueError("image must be Bx3xHxW with the same batch size")
     mask = (mask > 0.5).float()
     b, _, h, w = mask.shape
     if true_normal is None:
@@ -181,14 +210,20 @@ def make_corrupted_mask(
         normal = true_normal.to(mask.device, dtype=torch.bool).view(-1)
         if normal.numel() != b:
             raise ValueError("true_normal must have one flag per batch row")
-    crack_indices = torch.nonzero(~normal & (mask.flatten(1).sum(1) > 0), as_tuple=False).flatten()
+    crack_indices = torch.nonzero(
+        ~normal & (mask.flatten(1).sum(1) > 0), as_tuple=False
+    ).flatten()
     min_diff_pixels = max(1, int(round(h * w * float(min_diff_ratio))))
 
     wrong = torch.empty_like(mask)
     meta = []
     for i in range(b):
         if forced_kinds is not None:
-            kind = int(forced_kinds[i] if isinstance(forced_kinds, (list, tuple)) else forced_kinds)
+            kind = int(
+                forced_kinds[i]
+                if isinstance(forced_kinds, (list, tuple))
+                else forced_kinds
+            )
         elif bool(normal[i]):
             kind = 7 if crack_indices.numel() > 0 else 8
         else:
@@ -199,9 +234,11 @@ def make_corrupted_mask(
         donor_index = None
         attempts = 0
         for attempts in range(1, int(max_attempts) + 1):
-            candidate, donor_index = _apply(kind, mask, i, normal, crack_indices, generator)
-            candidate = _force_difference(candidate, mask[i:i + 1], generator)
-            if _acceptable(candidate, mask[i:i + 1], max_iou, min_diff_pixels):
+            candidate, donor_index = _apply(
+                kind, mask, i, crack_indices, generator, image=image
+            )
+            candidate = _force_difference(candidate, mask[i : i + 1], generator)
+            if _acceptable(candidate, mask[i : i + 1], max_iou, min_diff_pixels):
                 break
             if forced_kinds is None:
                 if bool(normal[i]):
@@ -209,29 +246,36 @@ def make_corrupted_mask(
                 else:
                     pool = (0, 1, 2, 3, 4, 5, 6, 8)
                     kind = pool[_randint(0, len(pool), mask.device, generator)]
-        candidate = _force_difference(candidate, mask[i:i + 1], generator)
-        if not _acceptable(candidate, mask[i:i + 1], max_iou, min_diff_pixels):
+        candidate = _force_difference(candidate, mask[i : i + 1], generator)
+        if not _acceptable(candidate, mask[i : i + 1], max_iou, min_diff_pixels):
             flat = candidate.view(-1).clone()
-            original_flat = mask[i:i + 1].view(-1)
+            original_flat = mask[i : i + 1].view(-1)
             count = min(int(min_diff_pixels), flat.numel())
-            idxs = torch.randperm(flat.numel(), device=flat.device, generator=generator)[:count]
+            idxs = torch.randperm(
+                flat.numel(), device=flat.device, generator=generator
+            )[:count]
             flat[idxs] = 1.0 - original_flat[idxs]
             candidate = flat.view_as(candidate)
-        if int(candidate.ne(mask[i:i + 1]).sum().item()) == 0:
+        if int((candidate != mask[i : i + 1]).sum().item()) == 0:
             raise RuntimeError("corruption regeneration produced a no-op")
-        if not _acceptable(candidate, mask[i:i + 1], max_iou, min_diff_pixels):
+        if not _acceptable(candidate, mask[i : i + 1], max_iou, min_diff_pixels):
             raise RuntimeError("corruption failed IoU/minimum-difference qualification")
         if donor_index is not None and donor_index == i:
             raise RuntimeError("donor corruption selected self")
-        wrong[i:i + 1] = candidate
-        meta.append({
-            "kind": CORRUPTION_NAMES[kind],
-            "kind_index": kind,
-            "attempts": attempts,
-            "changed_pixels": int(candidate.ne(mask[i:i + 1]).sum().item()),
-            "iou": _iou(candidate, mask[i:i + 1]),
-            "donor_index": donor_index,
-        })
+        wrong[i : i + 1] = candidate
+        meta.append(
+            {
+                "kind": CORRUPTION_NAMES[kind],
+                "kind_index": kind,
+                "attempts": attempts,
+                "changed_pixels": int(
+                    (candidate != mask[i : i + 1]).sum().item()
+                ),
+                "iou": _iou(candidate, mask[i : i + 1]),
+                "donor_index": donor_index,
+                "texture_guided": bool(kind == 8 and image is not None),
+            }
+        )
 
     invalid = (wrong - mask).abs().clamp(0, 1)
     if (invalid.flatten(1).sum(1) <= 0).any():
