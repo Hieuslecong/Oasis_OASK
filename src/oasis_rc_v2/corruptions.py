@@ -115,10 +115,10 @@ def make_corrupted_mask(
 ):
     """Return one qualified C1--C9 variant per row without changing operator identity.
 
-    A no-op operator is retried with its own stochastic parameters. For unforced
-    sampling, another eligible operator may be tried only after that operator is
-    exhausted. No random pixel-toggle fallback is permitted. C8 is accepted only
-    on an explicit true-normal RGB row and always uses a crack-positive donor.
+    A no-op operator is retried with its own stochastic parameters. A forced kind
+    is treated as a request: if that operator is semantically illegal for the row
+    (for example C8 on crack RGB), an eligible operator is resampled and metadata
+    records the actual operator. No random pixel-toggle fallback is permitted.
     """
     if mask.ndim != 4 or mask.shape[1] != 1:
         raise ValueError("mask must be Bx1xHxW")
@@ -146,21 +146,23 @@ def make_corrupted_mask(
     wrong = torch.empty_like(mask)
     meta = []
     for i in range(b):
+        eligible = _eligible(bool(normal[i]), crack_indices.numel())
+        requested_kind = None
         if forced_kinds is None:
-            kinds = _ordered(_eligible(bool(normal[i]), crack_indices.numel()), mask.device, generator)
+            kinds = _ordered(eligible, mask.device, generator)
         else:
-            forced = int(
+            requested_kind = int(
                 forced_kinds[i]
                 if isinstance(forced_kinds, (list, tuple))
                 else forced_kinds
             )
-            if not 0 <= forced < len(CORRUPTION_NAMES):
-                raise ValueError(f"forced corruption kind out of range: {forced}")
-            if forced == 7 and not bool(normal[i]):
-                raise ValueError("C8_crack_on_normal requires true-normal RGB")
-            if forced == 6 and bool(normal[i]):
-                raise ValueError("C7_donor_mask requires a crack-positive RGB row")
-            kinds = [forced]
+            if not 0 <= requested_kind < len(CORRUPTION_NAMES):
+                raise ValueError(f"forced corruption kind out of range: {requested_kind}")
+            kinds = (
+                [requested_kind]
+                if requested_kind in eligible
+                else _ordered(eligible, mask.device, generator)
+            )
 
         accepted = None
         accepted_kind = accepted_donor = accepted_attempt = None
@@ -205,6 +207,10 @@ def make_corrupted_mask(
             {
                 "kind": CORRUPTION_NAMES[accepted_kind],
                 "kind_index": accepted_kind,
+                "requested_kind_index": requested_kind,
+                "request_resampled": (
+                    requested_kind is not None and requested_kind != accepted_kind
+                ),
                 "attempts": total_attempts,
                 "operator_attempt": accepted_attempt,
                 "changed_pixels": int((accepted != mask[i : i + 1]).sum().item()),
