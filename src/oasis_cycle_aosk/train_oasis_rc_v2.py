@@ -1,10 +1,10 @@
-"""Canonical OASIS-RC v2 entrypoint for implementation 2.0.2."""
-import copy
+"""Source-anchored canonical OASIS-RC v2 entrypoint for implementation 2.0.3."""
 
 from . import train_oasis_rc_v2_legacy as _legacy
-from .critic_contract_v202 import validate_loaded_critic as _validate_v202
+from .critic_contract_v202 import validate_loaded_critic as _validate_strict
 from .train_critic_v202 import train_critic
-from .topology_loss import AOSK_TOPOLOGY_VARIANT, centerline_cldice_loss
+
+AOSK_VARIANT = "oriented-consistency-v1"
 
 augment = _legacy.augment
 build_targets = _legacy.build_targets
@@ -26,28 +26,13 @@ sha256_file = _legacy.sha256_file
 threshold_sweep_metrics = _legacy.threshold_sweep_metrics
 type_name_for_student = _legacy.type_name_for_student
 
-
-def validate_loaded_critic(saved, args, cfg):
-    """Compatibility export for pre-2.0.2 unit fixtures; main() remains strict."""
-    candidate = copy.deepcopy(saved)
-    hparams = candidate.get("training_hparams")
-    if isinstance(hparams, dict):
-        hparams.setdefault("rgb_shuffle_pair_only", True)
-        hparams.setdefault("mask_flip_training", False)
-        hparams.setdefault("mask_variant_contract", "operator-preserved-v1")
-    return _validate_v202(candidate, args, cfg)
-
-
-def _topology_aosk(logits, image, mask):
-    del image
-    return centerline_cldice_loss(logits, mask)
+validate_loaded_critic = _validate_strict
 
 
 def main():
     _legacy.train_critic = train_critic
-    _legacy.validate_loaded_critic = _validate_v202
-    _legacy.oriented_consistency_loss = _topology_aosk
-    _legacy.AOSK_VARIANT = AOSK_TOPOLOGY_VARIANT
+    _legacy.validate_loaded_critic = _validate_strict
+    _legacy.AOSK_VARIANT = AOSK_VARIANT
     return _legacy.main()
 
 
