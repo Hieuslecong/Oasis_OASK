@@ -12,7 +12,7 @@ MANIFEST="${MANIFEST:?set MANIFEST}"
 GATE0_CERTIFICATE="${GATE0_CERTIFICATE:?set GATE0_CERTIFICATE}"
 STUDENT_INIT="${STUDENT_INIT:?set STUDENT_INIT}"
 CRITIC="${CRITIC:?set CRITIC}"
-NORMAL_FRACTION="${NORMAL_FRACTION:-0.25}"
+NORMAL_FRACTION="${NORMAL_FRACTION:?set NORMAL_FRACTION explicitly}"
 STUDENT_KIND="${STUDENT_KIND:-multiscale}"
 STUDENT_WIDTH="${STUDENT_WIDTH:-16}"
 EPOCHS="${EPOCHS:-12}"
@@ -29,35 +29,22 @@ done
 mkdir -p "$ARM_ROOT"
 
 run_arm() {
-  local name="$1"
-  local mode="$2"
-  shift 2
-  local out="$ARM_ROOT/$name"
-  mkdir -p "$out"
+  local name="$1" mode="$2"; shift 2
+  local out="$ARM_ROOT/$name"; mkdir -p "$out"
   "$PYTHON" -m oasis_cycle_aosk.train_oasis_rc_v2 \
-    --config "$CONFIG" \
-    --manifest "$MANIFEST" \
-    --gate0-certificate "$GATE0_CERTIFICATE" \
-    --out "$out" \
-    --mode "$mode" \
-    --student-kind "$STUDENT_KIND" \
-    --student-width "$STUDENT_WIDTH" \
-    --epochs "$EPOCHS" \
-    --warmup "$WARMUP" \
-    --ramp-epochs "$RAMP" \
-    --normal-fraction "$NORMAL_FRACTION" \
-    --determinism-mode "$DETERMINISM_MODE" \
-    --student-init-checkpoint "$STUDENT_INIT" \
-    "$@" 2>&1 | tee "$out/train.log"
+    --config "$CONFIG" --manifest "$MANIFEST" --gate0-certificate "$GATE0_CERTIFICATE" \
+    --out "$out" --mode "$mode" --student-kind "$STUDENT_KIND" --student-width "$STUDENT_WIDTH" \
+    --epochs "$EPOCHS" --warmup "$WARMUP" --ramp-epochs "$RAMP" \
+    --normal-fraction "$NORMAL_FRACTION" --determinism-mode "$DETERMINISM_MODE" \
+    --student-init-checkpoint "$STUDENT_INIT" "$@" 2>&1 | tee "$out/train.log"
 }
 
 run_arm S0_control control
-run_arm S2_aosk_oriented aosk --lambda-aosk "$LAMBDA_AOSK"
+run_arm S2_aosk_topology aosk --lambda-aosk "$LAMBDA_AOSK"
 run_arm S1_oasis_rc_v2 connected --lambda-oasis "$LAMBDA_OASIS" --critic-checkpoint "$CRITIC"
-run_arm S3_oasis_rc_v2_aosk_oriented aosk_connected --lambda-oasis "$LAMBDA_OASIS" --lambda-aosk "$LAMBDA_AOSK" --critic-checkpoint "$CRITIC"
+run_arm S3_oasis_rc_v2_aosk_topology aosk_connected --lambda-oasis "$LAMBDA_OASIS" --lambda-aosk "$LAMBDA_AOSK" --critic-checkpoint "$CRITIC"
 
 echo "ALL_VALIDATION_ARMS_DONE"
-echo "LAMBDA_OASIS=$LAMBDA_OASIS"
-echo "LAMBDA_AOSK=$LAMBDA_AOSK"
-echo "AOSK_VARIANT=oriented-consistency-v1"
+echo "NORMAL_FRACTION=$NORMAL_FRACTION"
+echo "AOSK_VARIANT=centerline-cldice-v1"
 echo "TEST_FIREWALL=CLOSED"
