@@ -29,7 +29,12 @@ BASE_CORRUPTIONS = (
 
 def critic_gate_failures(metrics):
     failures = []
-    normal_expected = bool(metrics.get("normal_supervision_expected", True))
+    normal_expected = bool(
+        metrics.get(
+            "normal_supervision_expected",
+            int(metrics.get("normal_samples", 0)) > 0,
+        )
+    )
 
     for key, threshold in BASE_MINIMUMS.items():
         value = metrics.get(key)
