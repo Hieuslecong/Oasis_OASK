@@ -127,6 +127,7 @@ def _good_critic_metrics():
         "rgb_pair_samples": 10,
         "mask_pair_samples": 10,
         "normal_samples": 10,
+        "normal_supervision_expected": True,
         "valid_crack_predictions": 20,
         "corruption_invalid_recall": {name: 0.80 for name in names},
     }
@@ -144,3 +145,19 @@ def test_critic_gate_requires_true_normal_and_all_c1_c9():
     missing_kind["corruption_invalid_recall"] = dict(metrics["corruption_invalid_recall"])
     missing_kind["corruption_invalid_recall"].pop("C6_wrong_connection")
     assert "C6_wrong_connection:samples>0" in critic_gate_failures(missing_kind)
+
+
+def test_n0_gate_does_not_require_c8_or_normal_metrics():
+    metrics = _good_critic_metrics()
+    metrics.update(
+        {
+            "normal_supervision_expected": False,
+            "normal_samples": 0,
+            "valid_normal_bg_recall": None,
+            "normal_pair_valid_mean": None,
+            "normal_invalid_rate": None,
+        }
+    )
+    metrics["corruption_invalid_recall"] = dict(metrics["corruption_invalid_recall"])
+    metrics["corruption_invalid_recall"]["C8_crack_on_normal"] = None
+    assert critic_gate_failures(metrics) == []
