@@ -1,0 +1,36 @@
+name: OASIS-RC-v2 CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+concurrency:
+  group: oasis-rc-v2-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  unit-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-tested.txt
+          python -m pip install -e . --no-deps
+      - name: Compile
+        run: python -m compileall src scripts tests
+      - name: Test
+        run: pytest -q
+      - name: Shell syntax
+        run: |
+          bash -n scripts/run_smoke.sh
+          bash -n scripts/run_lightweight_smoke.sh
+          bash -n scripts/run_three_seeds.sh
+          bash -n scripts/evaluate_checkpoint.sh

@@ -31,7 +31,22 @@ def test_v2_corrupted_ranking_has_student_gradient_only():
     assert torch.isfinite(student_logits.grad).all()
     assert student_logits.grad.abs().sum() > 0
     assert all(parameter.grad is None for parameter in critic.parameters())
-    assert set(terms) == {"rank_gt", "rank_corrupted", "fp"}
+
+    required_loss_terms = {"rank_gt", "rank_corrupted", "fp"}
+    assert required_loss_terms.issubset(terms)
+    for key in required_loss_terms:
+        assert torch.isfinite(terms[key])
+
+    diagnostic_terms = {
+        "e_pred",
+        "e_gt",
+        "e_corrupted",
+        "delta_pred_gt",
+        "delta_pred_corrupted",
+    }
+    assert diagnostic_terms.issubset(terms)
+    for key in diagnostic_terms:
+        assert torch.isfinite(terms[key])
 
 
 def test_v2_critic_output_contract():
