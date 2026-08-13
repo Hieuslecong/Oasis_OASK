@@ -18,6 +18,8 @@ STUDENT_WIDTH="${STUDENT_WIDTH:-16}"
 EPOCHS="${EPOCHS:-12}"
 WARMUP="${WARMUP:-4}"
 RAMP="${RAMP:-3}"
+LAMBDA_OASIS="${LAMBDA_OASIS:-0.001}"
+LAMBDA_AOSK="${LAMBDA_AOSK:-0.01}"
 DETERMINISM_MODE="${DETERMINISM_MODE:-best_effort}"
 ARM_ROOT="${ARM_ROOT:-$EXP_ROOT/arms}"
 
@@ -50,10 +52,12 @@ run_arm() {
 }
 
 run_arm S0_control control
-run_arm S2_aosk_oriented aosk --lambda-aosk 0.01
-run_arm S1_oasis_rc_v2 connected --lambda-oasis 0.001 --critic-checkpoint "$CRITIC"
-run_arm S3_oasis_rc_v2_aosk_oriented aosk_connected --lambda-oasis 0.001 --lambda-aosk 0.01 --critic-checkpoint "$CRITIC"
+run_arm S2_aosk_oriented aosk --lambda-aosk "$LAMBDA_AOSK"
+run_arm S1_oasis_rc_v2 connected --lambda-oasis "$LAMBDA_OASIS" --critic-checkpoint "$CRITIC"
+run_arm S3_oasis_rc_v2_aosk_oriented aosk_connected --lambda-oasis "$LAMBDA_OASIS" --lambda-aosk "$LAMBDA_AOSK" --critic-checkpoint "$CRITIC"
 
 echo "ALL_VALIDATION_ARMS_DONE"
+echo "LAMBDA_OASIS=$LAMBDA_OASIS"
+echo "LAMBDA_AOSK=$LAMBDA_AOSK"
 echo "AOSK_VARIANT=oriented-consistency-v1"
 echo "TEST_FIREWALL=CLOSED"
