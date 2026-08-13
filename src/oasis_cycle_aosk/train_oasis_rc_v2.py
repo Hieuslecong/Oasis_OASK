@@ -35,7 +35,7 @@ from oasis_rc_v2.losses import (
     oasis_rc_student_loss_v2,
     segmentation_loss,
 )
-from oasis_rc_v2.protocol import verify_gate0_certificate
+from oasis_rc_v2.protocol import dataset_content_sha256, verify_gate0_certificate
 from oasis_rc_v2.qualification import critic_gate_passes
 from .aosk import oriented_consistency_loss
 from .data import ManifestDataset
@@ -62,20 +62,15 @@ def seed_all(seed):
 
 
 def configure_determinism(mode, device_type):
-    """Configure reproducibility without making the canonical CUDA path unusable.
-
-    ``strict`` throws on an unsupported nondeterministic CUDA operation.
-    ``best_effort`` uses deterministic algorithms where available and warns rather
-    than aborting when the installed PyTorch/CUDA stack lacks one. All canonical
-    GPU runners use best_effort and record the exact runtime in run_metadata.json.
-    """
+    """Configure reproducibility while keeping the canonical CUDA path usable."""
     if mode not in {"off", "best_effort", "strict"}:
         raise ValueError(f"invalid determinism mode: {mode}")
     enabled = mode != "off"
     if device_type == "cuda" and enabled:
         os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
     if hasattr(torch.backends, "cudnn"):
-        torch.backends.cudnn.benchmark = False if enabled else torch.backends.cudnn.benchmark
+        if enabled:
+            torch.backends.cudnn.benchmark = False
         torch.backends.cudnn.deterministic = enabled
         if enabled and hasattr(torch.backends.cudnn, "allow_tf32"):
             torch.backends.cudnn.allow_tf32 = False
@@ -96,7 +91,11 @@ def runtime_metadata(device, determinism_mode):
         "platform": platform.platform(),
         "torch": torch.__version__,
         "torch_cuda": torch.version.cuda,
-        "cudnn": torch.backends.cudnn.version() if torch.backends.cudnn.is_available() else None,
+        "cudnn": (
+            torch.backends.cudnn.version()
+            if hasattr(torch.backends, "cudnn") and torch.backends.cudnn.is_available()
+            else None
+        ),
         "device": str(device),
         "determinism_mode": determinism_mode,
         "deterministic_algorithms_enabled": torch.are_deterministic_algorithms_enabled(),
@@ -105,11 +104,11 @@ def runtime_metadata(device, determinism_mode):
         "git_sha": git_sha,
     }
     if device.type == "cuda" and torch.cuda.is_available():
-        p = torch.cuda.get_device_properties(device)
+        props = torch.cuda.get_device_properties(device)
         meta.update(
             {
-                "gpu_name": p.name,
-                "gpu_total_memory": int(p.total_memory),
+                "gpu_name": props.name,
+                "gpu_total_memory": int(props.total_memory),
                 "gpu_compute_capability": list(torch.cuda.get_device_capability(device)),
             }
         )
@@ -121,21 +120,21 @@ def make_generator(device, seed):
 
 
 def augment(x, y, generator=None):
-    def r():
+    def rand():
         return torch.rand((), device=x.device, generator=generator)
 
-    if r() < 0.5:
+    if rand() < 0.5:
         x, y = x.flip(-1), y.flip(-1)
-    if r() < 0.5:
+    if rand() < 0.5:
         x, y = x.flip(-2), y.flip(-2)
-    if r() < 0.35:
-        scale = 0.90 + 0.20 * r()
-        bias = (r() - 0.5) * 0.08
+    if rand() < 0.35:
+        scale = 0.90 + 0.20 * rand()
+        bias = (rand() - 0.5) * 0.08
         x = (x * scale + bias).clamp(-1, 1)
     return x, y
 
 
-def _seed_worker(worker_id):
+def _seed_worker(_worker_id):
     worker_seed = torch.initial_seed() % (2**32)
     np.random.seed(worker_seed)
     random.seed(worker_seed)
@@ -151,13 +150,15 @@ def make_loader(
     seed=1337,
     return_is_normal=False,
 ):
-    ds = ManifestDataset(manifest, split, size, return_is_normal=return_is_normal)
-    gen = torch.Generator().manual_seed(int(seed))
+    dataset = ManifestDataset(
+        manifest, split, size, return_is_normal=return_is_normal
+    )
+    generator = torch.Generator().manual_seed(int(seed))
     return DataLoader(
-        ds,
+        dataset,
         batch_size=batch,
         shuffle=shuffle,
-        generator=gen,
+        generator=generator,
         worker_init_fn=_seed_worker if num_workers > 0 else None,
         num_workers=num_workers,
         drop_last=False,
@@ -168,13 +169,13 @@ def make_loader(
 def make_train_loader(manifest, size, batch, normal_fraction, seed, num_workers=0):
     crack = ManifestDataset(manifest, "train", size, return_is_normal=True)
     if float(normal_fraction) <= 0:
-        gen = torch.Generator().manual_seed(int(seed))
+        generator = torch.Generator().manual_seed(int(seed))
         return (
             DataLoader(
                 crack,
                 batch_size=batch,
                 shuffle=True,
-                generator=gen,
+                generator=generator,
                 worker_init_fn=_seed_worker if num_workers > 0 else None,
                 num_workers=num_workers,
                 drop_last=False,
@@ -183,7 +184,9 @@ def make_train_loader(manifest, size, batch, normal_fraction, seed, num_workers=
             None,
         )
     normal = ManifestDataset(manifest, "normal_train", size, return_is_normal=True)
-    sampler = MixedBatchSampler(len(crack), len(normal), batch, normal_fraction, seed=seed)
+    sampler = MixedBatchSampler(
+        len(crack), len(normal), batch, normal_fraction, seed=seed
+    )
     return (
         DataLoader(
             ConcatDataset([crack, normal]),
@@ -239,7 +242,10 @@ def load_student_init(student, checkpoint, expected_seed=None):
         return
     saved = torch.load(checkpoint, map_location="cpu", weights_only=False)
     if isinstance(saved, dict):
-        if saved.get("student_kind") is not None and saved["student_kind"] != type_name_for_student(student):
+        if (
+            saved.get("student_kind") is not None
+            and saved["student_kind"] != type_name_for_student(student)
+        ):
             raise ValueError("student init kind mismatch")
         if (
             saved.get("student_width") is not None
@@ -303,50 +309,50 @@ def _mean(values):
 
 @torch.no_grad()
 def threshold_sweep_metrics(model, loader, device, thresholds=None, chunk_size=16):
-    """Evaluate all thresholds with one model forward per validation batch."""
+    """Evaluate all thresholds with exactly one model forward per validation batch."""
     model.eval()
     if thresholds is None:
         thresholds = np.arange(0.05, 0.951, 0.01)
     thresholds = [float(t) for t in thresholds]
-    t_all = torch.tensor(thresholds, device=device, dtype=torch.float32)
-    n = len(thresholds)
-    tp = torch.zeros(n, device=device, dtype=torch.float64)
-    fp = torch.zeros(n, device=device, dtype=torch.float64)
-    fn = torch.zeros(n, device=device, dtype=torch.float64)
-    normal_fp_pixels = torch.zeros(n, device=device, dtype=torch.float64)
-    normal_fp_images = torch.zeros(n, device=device, dtype=torch.float64)
+    threshold_tensor = torch.tensor(thresholds, device=device, dtype=torch.float32)
+    count = len(thresholds)
+    tp = torch.zeros(count, device=device, dtype=torch.float64)
+    fp = torch.zeros(count, device=device, dtype=torch.float64)
+    fn = torch.zeros(count, device=device, dtype=torch.float64)
+    normal_fp_pixels = torch.zeros(count, device=device, dtype=torch.float64)
+    normal_fp_images = torch.zeros(count, device=device, dtype=torch.float64)
     normal_count = 0
 
     for batch in loader:
         x, y = batch[:2]
         x, y = x.to(device), y.to(device)
-        prob = model(x).sigmoid()
+        probability = model(x).sigmoid()
         target = y > 0.5
         normal_rows = target.flatten(1).sum(1) == 0
         normal_count += int(normal_rows.sum().item())
-        for start in range(0, n, int(chunk_size)):
-            stop = min(n, start + int(chunk_size))
-            ts = t_all[start:stop].view(1, -1, 1, 1, 1)
-            pred = prob.unsqueeze(1) >= ts
+        for start in range(0, count, int(chunk_size)):
+            stop = min(count, start + int(chunk_size))
+            ts = threshold_tensor[start:stop].view(1, -1, 1, 1, 1)
+            prediction = probability.unsqueeze(1) >= ts
             truth = target.unsqueeze(1)
             dims = (0, 2, 3, 4)
-            tp[start:stop] += (pred & truth).sum(dims, dtype=torch.float64)
-            fp[start:stop] += (pred & ~truth).sum(dims, dtype=torch.float64)
-            fn[start:stop] += (~pred & truth).sum(dims, dtype=torch.float64)
+            tp[start:stop] += (prediction & truth).sum(dims, dtype=torch.float64)
+            fp[start:stop] += (prediction & ~truth).sum(dims, dtype=torch.float64)
+            fn[start:stop] += (~prediction & truth).sum(dims, dtype=torch.float64)
             if normal_rows.any():
-                pn = pred[normal_rows]
-                normal_fp_pixels[start:stop] += pn.sum(
+                normal_prediction = prediction[normal_rows]
+                normal_fp_pixels[start:stop] += normal_prediction.sum(
                     (0, 2, 3, 4), dtype=torch.float64
                 )
-                normal_fp_images[start:stop] += pn.flatten(2).any(-1).sum(
+                normal_fp_images[start:stop] += normal_prediction.flatten(2).any(-1).sum(
                     0, dtype=torch.float64
                 )
 
     results = []
-    for i, threshold in enumerate(thresholds):
-        tp_i = float(tp[i].item())
-        fp_i = float(fp[i].item())
-        fn_i = float(fn[i].item())
+    for index, threshold in enumerate(thresholds):
+        tp_i = float(tp[index].item())
+        fp_i = float(fp[index].item())
+        fn_i = float(fn[index].item())
         results.append(
             {
                 "precision": tp_i / (tp_i + fp_i + 1e-8),
@@ -354,11 +360,11 @@ def threshold_sweep_metrics(model, loader, device, thresholds=None, chunk_size=1
                 "dice": 2 * tp_i / (2 * tp_i + fp_i + fn_i + 1e-8),
                 "iou": tp_i / (tp_i + fp_i + fn_i + 1e-8),
                 "normal_fp_pixels_mean": (
-                    float(normal_fp_pixels[i].item()) / normal_count
+                    float(normal_fp_pixels[index].item()) / normal_count
                     if normal_count
                     else None
                 ),
-                "normal_fp_images": int(normal_fp_images[i].item()),
+                "normal_fp_images": int(normal_fp_images[index].item()),
                 "normal_image_count": normal_count,
                 "threshold": threshold,
             }
@@ -392,14 +398,19 @@ def _unpack_batch(batch):
     if len(batch) == 3:
         return batch
     x, y = batch
-    normal = y.flatten(1).sum(1) == 0
-    return x, y, normal
+    return x, y, y.flatten(1).sum(1) == 0
 
 
 @torch.no_grad()
 def critic_metrics(critic, loader, device, normal_loader=None):
-    """Qualification diagnostics including every C1-C9 corruption and true normals."""
-    gen = make_generator(device, 1729)
+    """Qualification diagnostics for crack relations, C1-C9 and true normals.
+
+    C7 is evaluated only on batches containing at least two crack-positive rows,
+    because its contract requires a non-self crack donor. If no such batch exists,
+    C7 remains unavailable (None) and the official quality gate fails rather than
+    fabricating a donor or crashing the diagnostic process.
+    """
+    generator = make_generator(device, 1729)
     critic.eval()
     crack_tp = crack_fn = 0.0
     valid_crack_predictions = 0
@@ -418,44 +429,55 @@ def critic_metrics(critic, loader, device, normal_loader=None):
         donor_bank.append(yc.detach().cpu())
 
         clean_out = critic(xc, yc)
-        clean_pred = clean_out["semantic"].argmax(1)
-        clean_sem, _, _ = build_targets(yc, torch.zeros_like(yc))
-        crack_tp += float(((clean_pred == 1) & (clean_sem == 1)).sum())
-        crack_fn += float(((clean_pred != 1) & (clean_sem == 1)).sum())
-        valid_crack_predictions += int((clean_pred == 1).sum())
+        clean_prediction = clean_out["semantic"].argmax(1)
+        clean_semantic, _, _ = build_targets(yc, torch.zeros_like(yc))
+        crack_tp += float(((clean_prediction == 1) & (clean_semantic == 1)).sum())
+        crack_fn += float(((clean_prediction != 1) & (clean_semantic == 1)).sum())
+        valid_crack_predictions += int((clean_prediction == 1).sum())
 
         rgb_good.extend(clean_out["pair"].sigmoid().flatten().cpu().tolist())
-        rgb_bad.extend(critic(xc.flip(-1), yc)["pair"].sigmoid().flatten().cpu().tolist())
+        rgb_bad.extend(
+            critic(xc.flip(-1), yc)["pair"].sigmoid().flatten().cpu().tolist()
+        )
         flipped = yc.flip(-1)
         changed = (flipped - yc).abs().flatten(1).sum(1) > 0
         if changed.any():
             mask_good.extend(
-                critic(xc[changed], yc[changed])["pair"].sigmoid().flatten().cpu().tolist()
+                critic(xc[changed], yc[changed])["pair"]
+                .sigmoid()
+                .flatten()
+                .cpu()
+                .tolist()
             )
             mask_bad.extend(
-                critic(xc[changed], flipped[changed])["pair"].sigmoid().flatten().cpu().tolist()
+                critic(xc[changed], flipped[changed])["pair"]
+                .sigmoid()
+                .flatten()
+                .cpu()
+                .tolist()
             )
 
-        # C1-C7 and C9 are qualified on crack-positive validation rows.
-        for kind in (0, 1, 2, 3, 4, 5, 6, 8):
+        kinds = [0, 1, 2, 3, 4, 5, 8]
+        if yc.shape[0] >= 2:
+            kinds.append(6)
+        for kind in kinds:
             wrong, invalid = make_corrupted_mask(
                 yc,
-                true_normal=torch.zeros(yc.shape[0], device=device, dtype=torch.bool),
-                generator=gen,
+                true_normal=torch.zeros(
+                    yc.shape[0], device=device, dtype=torch.bool
+                ),
+                generator=generator,
                 forced_kinds=[kind] * yc.shape[0],
                 image=xc,
             )
-            sem, _, _ = build_targets(wrong, invalid)
-            pred = critic(xc, wrong)["semantic"].argmax(1)
-            tp = float(((pred == 2) & (sem == 2)).sum())
-            fn = float(((pred != 2) & (sem == 2)).sum())
+            semantic, _, _ = build_targets(wrong, invalid)
+            prediction = critic(xc, wrong)["semantic"].argmax(1)
+            tp = float(((prediction == 2) & (semantic == 2)).sum())
+            fn = float(((prediction != 2) & (semantic == 2)).sum())
             per_kind[CORRUPTION_NAMES[kind]][0] += tp
             per_kind[CORRUPTION_NAMES[kind]][1] += fn
 
-    donor_masks = None
-    if donor_bank:
-        donor_masks = torch.cat(donor_bank, 0)[:64].to(device)
-
+    donor_masks = torch.cat(donor_bank, 0)[:64].to(device) if donor_bank else None
     normal_bg_ok = normal_invalid = normal_pixels = 0.0
     normal_pair = []
     normal_samples = 0
@@ -465,24 +487,23 @@ def critic_metrics(critic, loader, device, normal_loader=None):
             xn, yn, _ = _unpack_batch(batch)
             xn, yn = xn.to(device), yn.to(device)
             clean = critic(xn, yn)
-            pred = clean["semantic"].argmax(1)
-            normal_bg_ok += float((pred == 0).sum())
-            normal_invalid += float((pred == 2).sum())
-            normal_pixels += float(pred.numel())
+            prediction = clean["semantic"].argmax(1)
+            normal_bg_ok += float((prediction == 0).sum())
+            normal_invalid += float((prediction == 2).sum())
+            normal_pixels += float(prediction.numel())
             normal_samples += int(xn.shape[0])
             normal_pair.extend(clean["pair"].sigmoid().flatten().cpu().tolist())
 
-            # C8 is a real crack mask donor placed on true-normal RGB.
             if donor_masks is not None and donor_masks.shape[0] > 0:
                 ids = (
                     torch.arange(xn.shape[0], device=device) + donor_cursor
                 ) % donor_masks.shape[0]
                 donor_cursor += xn.shape[0]
-                dm = donor_masks[ids]
-                sem, _, _ = build_targets(dm, dm.clone())
-                cpred = critic(xn, dm)["semantic"].argmax(1)
-                tp = float(((cpred == 2) & (sem == 2)).sum())
-                fn = float(((cpred != 2) & (sem == 2)).sum())
+                donor = donor_masks[ids]
+                semantic, _, _ = build_targets(donor, donor.clone())
+                corrupt_prediction = critic(xn, donor)["semantic"].argmax(1)
+                tp = float(((corrupt_prediction == 2) & (semantic == 2)).sum())
+                fn = float(((corrupt_prediction != 2) & (semantic == 2)).sum())
                 per_kind["C8_crack_on_normal"][0] += tp
                 per_kind["C8_crack_on_normal"][1] += fn
 
@@ -492,18 +513,28 @@ def critic_metrics(critic, loader, device, normal_loader=None):
     corruption_recall = {}
     all_tp = all_fn = 0.0
     for name, (tp, fn) in per_kind.items():
-        corruption_recall[name] = tp / (tp + fn + 1e-8) if tp + fn > 0 else None
+        corruption_recall[name] = (
+            tp / (tp + fn + 1e-8) if tp + fn > 0 else None
+        )
         all_tp += tp
         all_fn += fn
     finite_corruption = [v for v in corruption_recall.values() if v is not None]
-    rg, rb = mean_or_none(rgb_good), mean_or_none(rgb_bad)
-    mg, mb = mean_or_none(mask_good), mean_or_none(mask_bad)
+    rgb_good_mean, rgb_bad_mean = mean_or_none(rgb_good), mean_or_none(rgb_bad)
+    mask_good_mean, mask_bad_mean = mean_or_none(mask_good), mean_or_none(mask_bad)
     return {
         "valid_crack_recall": crack_tp / (crack_tp + crack_fn + 1e-8),
         "invalid_recall": all_tp / (all_tp + all_fn + 1e-8),
         "valid_crack_predictions": valid_crack_predictions,
-        "rgb_pair_drop": None if rg is None or rb is None else rg - rb,
-        "mask_pair_drop": None if mg is None or mb is None else mg - mb,
+        "rgb_pair_drop": (
+            None
+            if rgb_good_mean is None or rgb_bad_mean is None
+            else rgb_good_mean - rgb_bad_mean
+        ),
+        "mask_pair_drop": (
+            None
+            if mask_good_mean is None or mask_bad_mean is None
+            else mask_good_mean - mask_bad_mean
+        ),
         "rgb_pair_samples": len(rgb_bad),
         "mask_pair_samples": len(mask_bad),
         "valid_normal_bg_recall": (
@@ -514,7 +545,8 @@ def critic_metrics(critic, loader, device, normal_loader=None):
         ),
         "normal_pair_valid_mean": mean_or_none(normal_pair),
         "normal_samples": normal_samples,
-        "normal_diagnostic_split": "normal_train",
+        "normal_supervision_expected": normal_loader is not None,
+        "normal_diagnostic_split": "normal_train" if normal_loader is not None else None,
         "corruption_invalid_recall": corruption_recall,
         "min_corruption_invalid_recall": (
             min(finite_corruption) if finite_corruption else None
@@ -527,12 +559,12 @@ def _critic_gate_passes(metrics):
 
 
 def _critic_term(critic, x, mask, invalid, args):
-    sem, mm, pv = build_targets(mask, invalid)
+    semantic, mismatch, pair_valid = build_targets(mask, invalid)
     return oasis_rc_critic_loss(
         critic(x, mask),
-        sem,
-        mm,
-        pv,
+        semantic,
+        mismatch,
+        pair_valid,
         crack_dice_weight=args.crack_dice_weight,
         mismatch_weight=args.mismatch_weight,
         pair_weight=args.pair_weight,
@@ -549,98 +581,106 @@ def train_critic(args, cfg, device, out, determinism_mode):
         cfg.get("num_workers", 0),
     )
     critic = OASISRCv2Critic(width=args.critic_width).to(device)
-    opt = torch.optim.AdamW(critic.parameters(), lr=args.lr)
-    aug_gen = make_generator(device, int(cfg["seed"]) + 30001)
-    corrupt_gen = make_generator(device, int(cfg["seed"]) + 30002)
+    optimizer = torch.optim.AdamW(critic.parameters(), lr=args.lr)
+    augmentation_generator = make_generator(device, int(cfg["seed"]) + 30001)
+    corruption_generator = make_generator(device, int(cfg["seed"]) + 30002)
     history = []
+
     for epoch in range(args.critic_epochs):
         if sampler:
             sampler.set_epoch(epoch)
         losses = []
-        counts = {}
-        normals = 0
+        corruption_counts = {}
+        normal_seen = 0
         critic.train()
         for x, y, is_normal in loader:
             x, y = x.to(device), y.to(device)
             is_normal = is_normal.to(device, dtype=torch.bool)
-            x, y = augment(x, y, aug_gen)
-            normals += int(is_normal.sum())
+            x, y = augment(x, y, augmentation_generator)
+            normal_seen += int(is_normal.sum())
             wrong, invalid, meta = make_corrupted_mask(
                 y,
                 true_normal=is_normal,
-                generator=corrupt_gen,
+                generator=corruption_generator,
                 return_meta=True,
                 image=x,
             )
-            for z in meta:
-                counts[z["kind"]] = counts.get(z["kind"], 0) + 1
+            for item in meta:
+                corruption_counts[item["kind"]] = (
+                    corruption_counts.get(item["kind"], 0) + 1
+                )
             loss = 0.5 * (
                 _critic_term(critic, x, y, torch.zeros_like(y), args)
                 + _critic_term(critic, x, wrong, invalid, args)
             )
+
             relational = []
             crack_rows = (~is_normal) & (y.flatten(1).sum(1) > 0)
             if crack_rows.any():
                 xc, yc = x[crack_rows], y[crack_rows]
-                sem, mm, pv = build_targets(yc, torch.zeros_like(yc))
-                pv = torch.zeros_like(pv)
+                semantic, mismatch, pair_valid = build_targets(
+                    yc, torch.zeros_like(yc)
+                )
+                pair_invalid = torch.zeros_like(pair_valid)
                 relational.append(
                     oasis_rc_critic_loss(
                         critic(xc.flip(-1), yc),
-                        sem,
-                        mm,
-                        pv,
+                        semantic,
+                        mismatch,
+                        pair_invalid,
                         crack_dice_weight=args.crack_dice_weight,
                         mismatch_weight=args.mismatch_weight,
                         pair_weight=args.pair_weight,
                     )[0]
                 )
-                mb = yc.flip(-1)
-                changed = (mb - yc).abs().flatten(1).sum(1) > 0
+                flipped = yc.flip(-1)
+                changed = (flipped - yc).abs().flatten(1).sum(1) > 0
                 if changed.any():
                     relational.append(
                         _critic_term(
                             critic,
                             xc[changed],
-                            mb[changed],
-                            (mb[changed] - yc[changed]).abs(),
+                            flipped[changed],
+                            (flipped[changed] - yc[changed]).abs(),
                             args,
                         )
                     )
             if relational:
                 loss = loss + args.rgb_mask_weight * torch.stack(relational).mean()
+
             if is_normal.any() and crack_rows.any():
                 xn = x[is_normal]
-                cm = y[crack_rows]
-                idx = torch.randint(
+                crack_masks = y[crack_rows]
+                indices = torch.randint(
                     0,
-                    cm.shape[0],
+                    crack_masks.shape[0],
                     (xn.shape[0],),
                     device=y.device,
-                    generator=corrupt_gen,
+                    generator=corruption_generator,
                 )
-                donor = cm[idx]
+                donor = crack_masks[indices]
                 loss = loss + args.normal_critic_weight * _critic_term(
                     critic, xn, donor, donor.clone(), args
                 )
-            opt.zero_grad()
+
+            optimizer.zero_grad()
             loss.backward()
             torch.nn.utils.clip_grad_norm_(critic.parameters(), 5.0)
-            opt.step()
+            optimizer.step()
             losses.append(float(loss.detach()))
-        if args.normal_fraction > 0 and normals <= 0:
+
+        if args.normal_fraction > 0 and normal_seen <= 0:
             raise RuntimeError(
                 "normal supervision requested but critic saw zero true-normal samples"
             )
-        history.append(
-            {
-                "epoch": epoch,
-                "critic_loss": _mean(losses),
-                "corruption_counts": counts,
-                "normal_samples_seen": normals,
-            }
-        )
-        print(history[-1], flush=True)
+        row = {
+            "epoch": epoch,
+            "critic_loss": _mean(losses),
+            "corruption_counts": corruption_counts,
+            "normal_samples_seen": normal_seen,
+        }
+        history.append(row)
+        print(row, flush=True)
 
     checkpoint = {
         "checkpoint_schema": CHECKPOINT_SCHEMA,
@@ -686,10 +726,10 @@ def train_student(args, cfg, device, out, determinism_mode, critic=None, aosk=Fa
     student = make_student(args.student_kind, args.student_width).to(device)
     setattr(student, "_oasis_width", int(args.student_width))
     load_student_init(student, args.student_init_checkpoint, seed)
-    opt = torch.optim.AdamW(student.parameters(), lr=args.lr)
-    aug_gen = make_generator(device, seed + 10001)
-    rc_gen = make_generator(device, seed + 20001)
-    if critic:
+    optimizer = torch.optim.AdamW(student.parameters(), lr=args.lr)
+    augmentation_generator = make_generator(device, seed + 10001)
+    corruption_generator = make_generator(device, seed + 20001)
+    if critic is not None:
         critic.eval()
         for parameter in critic.parameters():
             parameter.requires_grad_(False)
@@ -701,96 +741,98 @@ def train_student(args, cfg, device, out, determinism_mode, critic=None, aosk=Fa
         if sampler:
             sampler.set_epoch(epoch)
         student.train()
-        total_values = []
-        seg_values = []
-        rc_values = []
-        aosk_values = []
-        weighted_rc_values = []
-        weighted_aosk_values = []
-        energy_pred = []
-        energy_gt = []
-        energy_corrupted = []
+        total_values, seg_values = [], []
+        rc_values, aosk_values = [], []
+        weighted_rc_values, weighted_aosk_values = [], []
+        energy_pred, energy_gt, energy_corrupt = [], [], []
         rc_ramp = 0.0
+
         for x, y, is_normal in loader:
             x, y = x.to(device), y.to(device)
             is_normal = is_normal.to(device, dtype=torch.bool)
-            x, y = augment(x, y, aug_gen)
+            x, y = augment(x, y, augmentation_generator)
             logits = student(x)
             seg = segmentation_loss(logits, y)
             loss = seg
             rc_value = None
             aosk_value = None
             rc_extras = None
+
             if critic is not None and epoch >= args.warmup:
-                pred = logits.sigmoid()
+                prediction_mask = logits.sigmoid()
                 wrong, _ = make_corrupted_mask(
                     y,
                     true_normal=is_normal,
-                    generator=rc_gen,
+                    generator=corruption_generator,
                     image=x,
                 )
                 with torch.no_grad():
-                    gt = critic(x, y)
-                    corr = critic(x, wrong)
+                    gt_out = critic(x, y)
+                    corrupted_out = critic(x, wrong)
                 rc_value, rc_extras = oasis_rc_student_loss_v2(
-                    critic(x, pred),
-                    gt,
-                    corr,
-                    pred,
+                    critic(x, prediction_mask),
+                    gt_out,
+                    corrupted_out,
+                    prediction_mask,
                     y,
                     pair_weight=args.student_pair_weight,
                     corrupted_rank_weight=args.corrupted_rank_weight,
                 )
                 rc_ramp = min(
-                    1.0,
-                    (epoch - args.warmup + 1) / max(1, args.ramp_epochs),
+                    1.0, (epoch - args.warmup + 1) / max(1, args.ramp_epochs)
                 )
                 loss = loss + args.lambda_oasis * rc_ramp * rc_value
+
             if aosk:
                 aosk_value = oriented_consistency_loss(logits, x, y)
                 loss = loss + args.lambda_aosk * aosk_value
 
-            opt.zero_grad()
+            optimizer.zero_grad()
             loss.backward()
             torch.nn.utils.clip_grad_norm_(student.parameters(), 5.0)
-            opt.step()
+            optimizer.step()
 
             total_values.append(float(loss.detach()))
             seg_values.append(float(seg.detach()))
             if rc_value is not None:
-                rv = float(rc_value.detach())
-                rc_values.append(rv)
-                weighted_rc_values.append(float(args.lambda_oasis * rc_ramp * rv))
+                rc_float = float(rc_value.detach())
+                rc_values.append(rc_float)
+                weighted_rc_values.append(
+                    float(args.lambda_oasis * rc_ramp * rc_float)
+                )
                 energy_pred.append(float(rc_extras["e_pred"]))
                 energy_gt.append(float(rc_extras["e_gt"]))
-                energy_corrupted.append(float(rc_extras["e_corrupted"]))
+                energy_corrupt.append(float(rc_extras["e_corrupted"]))
             if aosk_value is not None:
-                av = float(aosk_value.detach())
-                aosk_values.append(av)
-                weighted_aosk_values.append(float(args.lambda_aosk * av))
+                aosk_float = float(aosk_value.detach())
+                aosk_values.append(aosk_float)
+                weighted_aosk_values.append(float(args.lambda_aosk * aosk_float))
 
-        val = select_threshold(student, val_loader, device)
-        epoch_row = {
+        validation_epoch = select_threshold(student, val_loader, device)
+        row = {
             "epoch": epoch,
             "loss_total": _mean(total_values),
             "loss_seg": _mean(seg_values),
             "loss_rc": _mean(rc_values) if rc_values else None,
             "loss_rc_weighted": _mean(weighted_rc_values) if weighted_rc_values else None,
             "loss_aosk": _mean(aosk_values) if aosk_values else None,
-            "loss_aosk_weighted": _mean(weighted_aosk_values) if weighted_aosk_values else None,
+            "loss_aosk_weighted": (
+                _mean(weighted_aosk_values) if weighted_aosk_values else None
+            ),
             "e_pred": _mean(energy_pred) if energy_pred else None,
             "e_gt": _mean(energy_gt) if energy_gt else None,
-            "e_corrupted": _mean(energy_corrupted) if energy_corrupted else None,
+            "e_corrupted": _mean(energy_corrupt) if energy_corrupt else None,
             "rc_ramp": rc_ramp,
-            "val": val,
+            "val": validation_epoch,
         }
-        history.append(epoch_row)
-        print(epoch_row, flush=True)
-        key = (val["dice"], val["iou"])
+        history.append(row)
+        print(row, flush=True)
+        key = (validation_epoch["dice"], validation_epoch["iou"])
         if best_key is None or key > best_key:
             best_key = key
             best_state = {
-                k: v.detach().cpu().clone() for k, v in student.state_dict().items()
+                key_name: value.detach().cpu().clone()
+                for key_name, value in student.state_dict().items()
             }
 
     if best_state is None:
@@ -819,7 +861,7 @@ def train_student(args, cfg, device, out, determinism_mode, critic=None, aosk=Fa
         "determinism_mode": determinism_mode,
     }
     runtime = runtime_metadata(device, determinism_mode)
-    ck = {
+    checkpoint = {
         "checkpoint_schema": CHECKPOINT_SCHEMA,
         "experiment_id": EXPERIMENT_ID,
         "method_version": METHOD_VERSION,
@@ -839,7 +881,7 @@ def train_student(args, cfg, device, out, determinism_mode, critic=None, aosk=Fa
         "runtime": runtime,
         "inference_contract": "RGB -> crack logits only",
     }
-    torch.save(ck, out / "student_only.pt")
+    torch.save(checkpoint, out / "student_only.pt")
     (out / "history.json").write_text(json.dumps(history, indent=2))
     (out / "validation.json").write_text(json.dumps(validation, indent=2))
     (out / "effective_config.json").write_text(json.dumps(effective, indent=2))
@@ -850,7 +892,7 @@ def train_student(args, cfg, device, out, determinism_mode, critic=None, aosk=Fa
                 "experiment_id": EXPERIMENT_ID,
                 "method_version": METHOD_VERSION,
                 "implementation_version": IMPLEMENTATION_VERSION,
-                "exact_command": " ".join(shlex.quote(i) for i in sys.argv),
+                "exact_command": " ".join(shlex.quote(arg) for arg in sys.argv),
                 "manifest_file_sha256": sha256_file(args.manifest),
                 "dataset_content_sha256": args._dataset_content_sha256,
                 "gate0_certificate_sha256": sha256_file(args.gate0_certificate),
@@ -867,50 +909,57 @@ def train_student(args, cfg, device, out, determinism_mode, critic=None, aosk=Fa
 
 
 def _build_parser():
-    p = argparse.ArgumentParser()
-    p.add_argument("--config", required=True)
-    p.add_argument("--manifest", required=True)
-    p.add_argument("--gate0-certificate", default=None)
-    p.add_argument("--allow-uncertified-manifest", action="store_true")
-    p.add_argument("--out", required=True)
-    p.add_argument(
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--config", required=True)
+    parser.add_argument("--manifest", required=True)
+    parser.add_argument("--gate0-certificate", default=None)
+    parser.add_argument("--allow-uncertified-manifest", action="store_true")
+    parser.add_argument("--out", required=True)
+    parser.add_argument(
         "--mode",
         choices=("control", "critic", "connected", "aosk", "aosk_connected"),
         required=True,
     )
-    p.add_argument("--normal-fraction", type=float, default=0.0)
-    p.add_argument("--normal-critic-weight", type=float, default=1.0)
-    p.add_argument("--critic-epochs", type=int, default=10)
-    p.add_argument("--epochs", type=int, default=12)
-    p.add_argument("--warmup", type=int, default=4)
-    p.add_argument("--ramp-epochs", type=int, default=3)
-    p.add_argument("--lambda-aosk", type=float, default=0.01)
-    p.add_argument("--lambda-oasis", type=float, default=None)
-    p.add_argument("--critic-width", type=int, default=None)
-    p.add_argument("--crack-dice-weight", type=float, default=1.0)
-    p.add_argument("--mismatch-weight", type=float, default=1.0)
-    p.add_argument("--pair-weight", type=float, default=0.25)
-    p.add_argument("--rgb-mask-weight", type=float, default=1.0)
-    p.add_argument("--student-pair-weight", type=float, default=0.25)
-    p.add_argument("--corrupted-rank-weight", type=float, default=1.0)
-    p.add_argument("--student-width", type=int, default=16)
-    p.add_argument("--lr", type=float, default=2e-4)
-    p.add_argument("--deterministic", action="store_true", help="legacy alias")
-    p.add_argument(
+    parser.add_argument("--normal-fraction", type=float, default=0.0)
+    parser.add_argument("--normal-critic-weight", type=float, default=1.0)
+    parser.add_argument("--critic-epochs", type=int, default=10)
+    parser.add_argument("--epochs", type=int, default=12)
+    parser.add_argument("--warmup", type=int, default=4)
+    parser.add_argument("--ramp-epochs", type=int, default=3)
+    parser.add_argument("--lambda-aosk", type=float, default=0.01)
+    parser.add_argument("--lambda-oasis", type=float, default=None)
+    parser.add_argument("--critic-width", type=int, default=None)
+    parser.add_argument("--crack-dice-weight", type=float, default=1.0)
+    parser.add_argument("--mismatch-weight", type=float, default=1.0)
+    parser.add_argument("--pair-weight", type=float, default=0.25)
+    parser.add_argument("--rgb-mask-weight", type=float, default=1.0)
+    parser.add_argument("--student-pair-weight", type=float, default=0.25)
+    parser.add_argument("--corrupted-rank-weight", type=float, default=1.0)
+    parser.add_argument("--student-width", type=int, default=16)
+    parser.add_argument("--lr", type=float, default=2e-4)
+    parser.add_argument("--deterministic", action="store_true", help="legacy alias")
+    parser.add_argument(
         "--determinism-mode",
         choices=("off", "best_effort", "strict"),
         default=None,
     )
-    p.add_argument("--allow-random-init", action="store_true")
-    p.add_argument("--allow-inline-critic", action="store_true")
-    p.add_argument(
+    parser.add_argument("--allow-random-init", action="store_true")
+    parser.add_argument("--allow-inline-critic", action="store_true")
+    parser.add_argument(
         "--student-kind",
-        choices=("multiscale", "lightweight", "mobilenetv3", "dsunet", "fastscnn", "bisenet"),
+        choices=(
+            "multiscale",
+            "lightweight",
+            "mobilenetv3",
+            "dsunet",
+            "fastscnn",
+            "bisenet",
+        ),
         default="multiscale",
     )
-    p.add_argument("--critic-checkpoint", default=None)
-    p.add_argument("--student-init-checkpoint", default=None)
-    return p
+    parser.add_argument("--critic-checkpoint", default=None)
+    parser.add_argument("--student-init-checkpoint", default=None)
+    return parser
 
 
 def main():
@@ -925,6 +974,7 @@ def main():
         args.rgb_mask_weight,
     ) < 0:
         raise ValueError("critic loss weights must be non-negative")
+
     cfg = yaml.safe_load(Path(args.config).read_text())
     for key in ("seed", "image_size", "batch_size", "device"):
         if key not in cfg:
@@ -941,16 +991,14 @@ def main():
         raise ValueError("training manifest must contain train and val")
     normal_policy = "train" if args.normal_fraction > 0 else "none"
     if not args.allow_uncertified_manifest:
-        cert = verify_gate0_certificate(
+        certificate = verify_gate0_certificate(
             args.gate0_certificate,
             args.manifest,
             int(cfg["image_size"]),
             normal_policy,
         )
-        args._dataset_content_sha256 = cert["dataset_content_sha256"]
+        args._dataset_content_sha256 = certificate["dataset_content_sha256"]
     else:
-        from oasis_rc_v2.protocol import dataset_content_sha256
-
         args._dataset_content_sha256 = dataset_content_sha256(args.manifest)
 
     if (
@@ -972,8 +1020,10 @@ def main():
     determinism_mode = args.determinism_mode
     if determinism_mode is None:
         determinism_mode = (
-            "best_effort" if args.deterministic and device_type == "cuda"
-            else "strict" if args.deterministic
+            "best_effort"
+            if args.deterministic and device_type == "cuda"
+            else "strict"
+            if args.deterministic
             else "off"
         )
     seed_all(cfg["seed"])
@@ -1019,7 +1069,9 @@ def main():
                 seed=int(cfg["seed"]),
                 return_is_normal=True,
             )
-        metrics = critic_metrics(critic, val_loader, device, normal_loader=normal_loader)
+        metrics = critic_metrics(
+            critic, val_loader, device, normal_loader=normal_loader
+        )
         (out / "critic_validation.json").write_text(json.dumps(metrics, indent=2))
         print({"critic_validation": metrics}, flush=True)
         if args.mode == "critic":
