@@ -30,9 +30,21 @@ def local_break(single, generator):
         return out
     y, x = (int(v) for v in coords[randint(0, coords.shape[0], single.device, generator)].tolist())
     h, w = single.shape[-2:]
-    radius = max(1, min(h, w) // 32)
-    out[..., max(0, y-radius):min(h, y+radius+1), max(0, x-2*radius):min(w, x+2*radius+1)] = 0.0
-    return out
+    # Scale the break so the removed region is large enough to register as a
+    # real corruption against the acceptance gate (iou <= 0.95 / min_diff_pixels).
+    # A fixed tiny radius fails on thin, long real cracks (only ~40-60 px removed).
+    n_crack = int((single[0, 0] > 0.5).sum())
+    target = max(1, int(0.08 * n_crack))
+    radius = 1
+    while True:
+        y1, y2 = max(0, y - radius), min(h, y + radius + 1)
+        x1, x2 = max(0, x - radius), min(w, x + radius + 1)
+        candidate = out.clone()
+        candidate[..., y1:y2, x1:x2] = 0.0
+        if int((candidate != single).sum()) >= target or radius >= max(h, w):
+            return candidate
+        radius *= 2
+
 
 
 def wrong_connection(single, generator):
