@@ -6,7 +6,7 @@ MANIFEST="${1:?Usage: scripts/run_smoke.sh trainval_manifest.jsonl gate0_trainin
 GATE0_CERTIFICATE="${2:?Missing Gate 0 training-view certificate}"
 STUDENT_INIT="${3:?Missing canonical student init checkpoint}"
 STUDENT_KIND="${4:-multiscale}"
-STUDENT_WIDTH="${STUDENT_WIDTH:-16}"
+STUDENT_WIDTH="${STUDENT_WIDTH:-}"
 CONFIG="${CONFIG:-$PACKAGE_ROOT/configs/canonical_gpu_256_seed1337.yaml}"
 NORMAL_FRACTION="${NORMAL_FRACTION:?set NORMAL_FRACTION explicitly: 0.0 or 0.25}"
 RUN_ROOT="${RUN_ROOT:-$PACKAGE_ROOT/runs/four_arm_micro_${STUDENT_KIND}}"
@@ -22,6 +22,18 @@ export CUBLAS_WORKSPACE_CONFIG="${CUBLAS_WORKSPACE_CONFIG:-:4096:8}"
 for f in "$MANIFEST" "$GATE0_CERTIFICATE" "$STUDENT_INIT" "$CONFIG"; do
   test -f "$f" || { echo "MISSING: $f" >&2; exit 2; }
 done
+
+if [ -z "$STUDENT_WIDTH" ]; then
+  STUDENT_WIDTH="$($PYTHON - "$STUDENT_INIT" <<'PY'
+import sys, torch
+saved=torch.load(sys.argv[1], map_location="cpu", weights_only=False)
+width=saved.get("student_width")
+if width is None:
+    raise SystemExit("student init missing student_width")
+print(int(width))
+PY
+)"
+fi
 
 "$PYTHON" - "$NORMAL_FRACTION" <<'PY'
 import sys
