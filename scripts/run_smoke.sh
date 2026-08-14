@@ -7,7 +7,7 @@ GATE0_CERTIFICATE="${2:?Missing Gate 0 training-view certificate}"
 STUDENT_INIT="${3:?Missing canonical student init checkpoint}"
 STUDENT_KIND="${4:-multiscale}"
 CONFIG="${CONFIG:-$PACKAGE_ROOT/configs/canonical_gpu_256_seed1337.yaml}"
-NORMAL_FRACTION="${NORMAL_FRACTION:-0.25}"
+NORMAL_FRACTION="${NORMAL_FRACTION:?set NORMAL_FRACTION explicitly: 0.0 or 0.25}"
 RUN_ROOT="${RUN_ROOT:-$PACKAGE_ROOT/runs/four_arm_micro_${STUDENT_KIND}}"
 PYTHON="${PYTHON:-python}"
 DETERMINISM_MODE="${DETERMINISM_MODE:-best_effort}"
@@ -21,6 +21,13 @@ export CUBLAS_WORKSPACE_CONFIG="${CUBLAS_WORKSPACE_CONFIG:-:4096:8}"
 for f in "$MANIFEST" "$GATE0_CERTIFICATE" "$STUDENT_INIT" "$CONFIG"; do
   test -f "$f" || { echo "MISSING: $f" >&2; exit 2; }
 done
+
+"$PYTHON" - "$NORMAL_FRACTION" <<'PY'
+import sys
+v=float(sys.argv[1])
+if v not in (0.0, 0.25):
+    raise SystemExit("smoke protocol requires NORMAL_FRACTION=0.0 or 0.25")
+PY
 
 "$PYTHON" -m oasis_cycle_aosk.train_oasis_rc_v2 \
   --config "$CONFIG" --manifest "$MANIFEST" --gate0-certificate "$GATE0_CERTIFICATE" \
@@ -48,12 +55,12 @@ run() {
 }
 
 run S0_control control
-run S2_aosk_topology aosk --lambda-aosk 0.01
-run S1_oasis connected --lambda-oasis 0.001 --critic-checkpoint "$CRITIC"
-run S3_oasis_aosk_topology aosk_connected --lambda-oasis 0.001 --lambda-aosk 0.01 --critic-checkpoint "$CRITIC"
+run S1_oasis_rc_v2 connected --lambda-oasis 0.001 --critic-checkpoint "$CRITIC"
+run S2_aosk aosk --lambda-aosk 0.01
+run S3_oasis_rc_v2_aosk aosk_connected --lambda-oasis 0.001 --lambda-aosk 0.01 --critic-checkpoint "$CRITIC"
 
 echo "Four-arm validation micro-smoke complete: $RUN_ROOT"
 echo "SMOKE_CRITIC_EPOCHS=$SMOKE_CRITIC_EPOCHS"
 echo "SMOKE_EPOCHS=$SMOKE_EPOCHS"
-echo "AOSK_VARIANT=centerline-cldice-v1"
+echo "AOSK_VARIANT=oriented-consistency-v1"
 echo "TEST_FIREWALL=CLOSED"
