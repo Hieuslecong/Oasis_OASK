@@ -96,6 +96,13 @@ def main():
         action="store_true",
         help="debug-only escape hatch; each file becomes its own lineage",
     )
+    p.add_argument(
+        "--exclude-file",
+        default=None,
+        help="path to JSON file: list of normal image paths (resolved) to exclude "
+             "from the derived manifest (e.g. cross-label duplicates found by the "
+             "normal source audit). Raw data is never modified.",
+    )
     args = p.parse_args()
 
     if not 0.0 < args.train_ratio <= 1.0:
@@ -124,12 +131,27 @@ def main():
     if not candidates:
         raise RuntimeError(f"no images found under {root}")
 
+    excluded = set()
+    if args.exclude_file:
+        ex_path = Path(args.exclude_file).resolve()
+        ex_data = json.loads(ex_path.read_text())
+        # Accept either a JSON list of paths or {"excluded_normal_candidates": [...]}
+        if isinstance(ex_data, dict):
+            items = ex_data.get("excluded_normal_candidates", [])
+            excluded = {Path(str(it["path"])).resolve() for it in items if isinstance(it, dict) and "path" in it}
+        else:
+            excluded = {Path(str(p)).resolve() for p in ex_data}
+
     accepted = []
     rejected = []
+    excluded_hits = []
     for image in candidates:
         try:
             with Image.open(image) as im:
                 im.verify()
+            if image.resolve() in excluded:
+                excluded_hits.append(str(image))
+                continue
             accepted.append(image)
         except Exception as exc:
             rejected.append({"image": str(image), "reason": str(exc)})
@@ -198,6 +220,7 @@ def main():
         "canonical_rows": len(canonical),
         "normal_root": str(root),
         "normal_candidates": len(candidates),
+        "normal_excluded": len(excluded_hits),
         "normal_accepted": len(accepted),
         "normal_rejected": rejected,
         "lineage_policy": lineage_policy,

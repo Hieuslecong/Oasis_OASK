@@ -32,10 +32,7 @@ def test_audit_can_block_source_leakage(tmp_path):
     ]
     p = tmp_path / "manifest.jsonl"
     p.write_text("\n".join(json.dumps(row) for row in rows))
-    assert any(
-        "source leakage" in error
-        for error in audit(p, require_source_disjoint=True)
-    )
+    assert any("source leakage" in error for error in audit(p, require_source_disjoint=True))
 
 
 def test_audit_rejects_native_resolution_mismatch_without_alignment_certificate(tmp_path):
@@ -45,16 +42,10 @@ def test_audit_rejects_native_resolution_mismatch_without_alignment_certificate(
         mask = tmp_path / f"m{idx}.png"
         _rgb(image, size=(16, 16), value=40 + idx * 20)
         _mask(mask, size=(8, 8), point=(2 + idx, 2))
-        rows.append(
-            {
-                "image": str(image),
-                "mask": str(mask),
-                "split": split,
-                "source_id": f"s{idx}",
-                "lineage_id": f"p{idx}",
-                "is_normal": False,
-            }
-        )
+        rows.append({
+            "image": str(image), "mask": str(mask), "split": split,
+            "source_id": f"s{idx}", "lineage_id": f"p{idx}", "is_normal": False,
+        })
     p = tmp_path / "m.jsonl"
     p.write_text("\n".join(json.dumps(r) for r in rows))
     errors = audit(p, resize_size=8)
@@ -67,24 +58,17 @@ def test_audit_accepts_verified_resolution_mismatch_when_crack_survives_resize(t
         image = tmp_path / f"i{idx}.png"
         mask = tmp_path / f"m{idx}.png"
         _rgb(image, size=(16, 16), value=40 + idx * 20)
-        # Thick enough to survive 8x8 resize.
         im = Image.new("L", (16, 16), color=0)
         for y in range(6, 10):
             for x in range(6, 10):
                 im.putpixel((x, y), 255)
         im = im.resize((8, 8), resample=Image.Resampling.NEAREST)
         im.save(mask)
-        rows.append(
-            {
-                "image": str(image),
-                "mask": str(mask),
-                "split": split,
-                "source_id": f"s{idx}",
-                "lineage_id": f"p{idx}",
-                "is_normal": False,
-                "alignment_verified": True,
-            }
-        )
+        rows.append({
+            "image": str(image), "mask": str(mask), "split": split,
+            "source_id": f"s{idx}", "lineage_id": f"p{idx}", "is_normal": False,
+            "alignment_verified": True,
+        })
     p = tmp_path / "m.jsonl"
     p.write_text("\n".join(json.dumps(r) for r in rows))
     errors = audit(p, resize_size=8)
@@ -97,19 +81,52 @@ def test_audit_detects_crack_that_disappears_after_resize(tmp_path):
         image = tmp_path / f"i{idx}.png"
         mask = tmp_path / f"m{idx}.png"
         _rgb(image, size=(8, 8), value=30 + idx * 20)
-        # Corner pixel disappears when reduced to 1x1 with NEAREST.
         _mask(mask, size=(8, 8), point=(0, 0))
-        rows.append(
-            {
-                "image": str(image),
-                "mask": str(mask),
-                "split": split,
-                "source_id": f"s{idx}",
-                "lineage_id": f"p{idx}",
-                "is_normal": False,
-            }
-        )
+        rows.append({
+            "image": str(image), "mask": str(mask), "split": split,
+            "source_id": f"s{idx}", "lineage_id": f"p{idx}", "is_normal": False,
+        })
     p = tmp_path / "m.jsonl"
     p.write_text("\n".join(json.dumps(r) for r in rows))
     errors = audit(p, resize_size=1)
     assert any("becomes empty after resize" in e for e in errors)
+
+
+def test_certified_n0_empty_passes_uncertified_empty_fails(tmp_path):
+    rows = []
+    for i, cert in enumerate(("verified_no_crack", None)):
+        img = tmp_path / f"i{i}.png"
+        msk = tmp_path / f"m{i}.png"
+        _rgb(img, size=(8, 8), value=60 + i)
+        Image.new("L", (8, 8), color=0).save(msk)
+        r = {
+            "image": str(img), "mask": str(msk), "split": "test",
+            "source_id": "S", "lineage_id": f"q{i}", "is_normal": False,
+        }
+        if cert:
+            r["empty_target_status"] = cert
+        rows.append(r)
+    mfp = tmp_path / "m.jsonl"
+    mfp.write_text("\n".join(json.dumps(r) for r in rows))
+    errors = audit(mfp, resize_size=256)
+    msgs = "\n".join(errors)
+    assert "row 0:" not in msgs
+    assert "row 1:" in msgs
+
+
+def test_certified_empty_across_splits_no_reuse_error(tmp_path):
+    rows = []
+    for i, sp in enumerate(("train", "val", "test")):
+        img = tmp_path / f"img{i}.png"
+        msk = tmp_path / f"msk{i}.png"
+        _rgb(img, size=(8, 8), value=20 + 40 * i)
+        Image.new("L", (8, 8), color=0).save(msk)
+        rows.append({
+            "image": str(img), "mask": str(msk), "split": sp,
+            "source_id": f"BCL{i}", "lineage_id": f"b{i}", "is_normal": False,
+            "empty_target_status": "verified_no_crack",
+        })
+    mfp = tmp_path / "m.jsonl"
+    mfp.write_text("\n".join(json.dumps(r) for r in rows))
+    errors = audit(mfp, resize_size=256)
+    assert errors == []

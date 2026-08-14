@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "oasis-rc-v2-crack-segmentation"
-version = "2.0.0.dev0"
-description = "Reconstructed OASIS-RC-v2 with explicit online corrupted-mask ranking"
+version = "2.0.3"
+description = "Source-anchored OASIS-RC v2 relational hard-negative training for crack segmentation"
 requires-python = ">=3.10"
 dependencies = [
   "torch>=2.3",
