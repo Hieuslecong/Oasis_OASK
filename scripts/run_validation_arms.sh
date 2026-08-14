@@ -40,11 +40,11 @@ run_arm() {
 }
 
 run_arm S0_control control
-run_arm S2_aosk_topology aosk --lambda-aosk "$LAMBDA_AOSK"
 run_arm S1_oasis_rc_v2 connected --lambda-oasis "$LAMBDA_OASIS" --critic-checkpoint "$CRITIC"
-run_arm S3_oasis_rc_v2_aosk_topology aosk_connected --lambda-oasis "$LAMBDA_OASIS" --lambda-aosk "$LAMBDA_AOSK" --critic-checkpoint "$CRITIC"
+run_arm S2_aosk aosk --lambda-aosk "$LAMBDA_AOSK"
+run_arm S3_oasis_rc_v2_aosk aosk_connected --lambda-oasis "$LAMBDA_OASIS" --lambda-aosk "$LAMBDA_AOSK" --critic-checkpoint "$CRITIC"
 
 echo "ALL_VALIDATION_ARMS_DONE"
 echo "NORMAL_FRACTION=$NORMAL_FRACTION"
-echo "AOSK_VARIANT=centerline-cldice-v1"
+echo "AOSK_VARIANT=oriented-consistency-v1"
 echo "TEST_FIREWALL=CLOSED"
