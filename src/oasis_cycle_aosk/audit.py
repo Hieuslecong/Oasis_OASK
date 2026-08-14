@@ -288,7 +288,8 @@ def audit(
                     errors.append(
                         "perceptual-rgb near-duplicate across splits: "
                         f"rows={pair} splits={sorted((left[1], right[1]))} "
-                        f"dhash_distance={distance} mean_rgb_distance={color_distance:.3f}"
+                        f"dhash_distance={distance} mean_rgb_distance={color_distance:.3f} "
+                        f"paths={[left[2], right[2]]}"
                     )
 
     for split in required_splits:
@@ -324,6 +325,11 @@ def main():
         choices=("full_benchmark", "training_view"),
         default=None,
     )
+    p.add_argument(
+        "--parent-full-certificate",
+        default=None,
+        help="required provenance parent when issuing a training_view certificate",
+    )
     a = p.parse_args()
     errors = audit(
         a.manifest,
@@ -349,6 +355,21 @@ def main():
             "\n".join(json.dumps(r, ensure_ascii=False, sort_keys=True) for r in inventory)
             + ("\n" if inventory else "")
         )
+        parent_full_sha = None
+        if a.certificate_scope == "training_view":
+            if not a.parent_full_certificate:
+                raise SystemExit(
+                    "--parent-full-certificate is required for training_view certificates"
+                )
+            parent_path = Path(a.parent_full_certificate)
+            parent = json.loads(parent_path.read_text())
+            if parent.get("status") != "PASS" or parent.get("scope") != "full_benchmark":
+                raise SystemExit("parent certificate must be PASS/full_benchmark")
+            parent_full_sha = _sha256_file(parent_path)
+        elif a.parent_full_certificate:
+            raise SystemExit(
+                "--parent-full-certificate is only valid for training_view certificates"
+            )
         cert = {
             "status": "PASS",
             "scope": a.certificate_scope,
@@ -363,6 +384,7 @@ def main():
                 a.required_splits or ("train", "val", a.test_split)
             ),
             "gate0_schema": 2,
+            "parent_full_gate0_certificate_sha256": parent_full_sha,
             "perceptual_duplicate_contract": "dhash64<=4-and-mean-rgb-distance<=12-cross-split-v1",
         }
         out.write_text(json.dumps(cert, indent=2))

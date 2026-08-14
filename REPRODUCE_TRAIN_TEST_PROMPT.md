@@ -42,16 +42,15 @@ python -m compileall src scripts tests
 pytest -vv
 ```
 
-## True-normal RGB
+## Prepare certified real data
 
 Safe default when parent identity cannot yet be recovered:
 
 ```bash
-python scripts/add_normal_rgb_to_manifest.py \
-  --canonical-manifest /ABSOLUTE/PATH/manifest_final.jsonl \
-  --normal-root /hdd1/hieulc/Oasis_AOSK/datasets/structural_defects/Walls/Non-cracked \
-  --train-ratio 1.0 \
-  --out /ABSOLUTE/PATH/manifest_with_normal.jsonl
+DATA_ROOT=/ABSOLUTE/PATH/data \
+CANONICAL_MANIFEST=/ABSOLUTE/PATH/canonical_manifest.jsonl \
+NORMAL_ROOT=/ABSOLUTE/PATH/audited_normal_rgb \
+bash scripts/prepare_real_data.sh
 ```
 
 Do **not** create `normal_val` by randomly splitting patches. If filenames encode
@@ -61,10 +60,9 @@ ratio below 1.0. The first capturing group becomes the lineage key.
 ## Gate 0
 
 ```bash
-PYTHONPATH=src python -m oasis_cycle_aosk.audit \
-  --manifest /ABSOLUTE/PATH/manifest_with_normal.jsonl \
-  --resize-size 256 \
-  --normal-policy train
+The preparation script emits both a full-benchmark certificate and a linked
+train/validation-view certificate. Training rejects either a missing link or a
+changed manifest/data payload.
 ```
 
 Stop on any failure. Important checks include raw/decoded RGB and mask hashes,
@@ -93,9 +91,11 @@ paper protocol.
 
 ```bash
 scripts/run_smoke.sh \
-  /ABSOLUTE/PATH/manifest_with_normal.jsonl \
+  /ABSOLUTE/PATH/manifest_trainval_with_normal.jsonl \
+  /ABSOLUTE/PATH/gate0_training.json \
   /ABSOLUTE/PATH/student_init_seed1337.pt \
-  multiscale
+  multiscale \
+  /ABSOLUTE/PATH/gate0_full.json
 ```
 
 This is validation-only and must not be reported as scientific evidence.
@@ -106,6 +106,8 @@ This is validation-only and must not be reported as scientific evidence.
 python scripts/diagnose_aux_gradients.py \
   --config configs/canonical_gpu_256_seed1337.yaml \
   --manifest /ABSOLUTE/PATH/manifest_with_normal.jsonl \
+  --gate0-certificate /ABSOLUTE/PATH/gate0_training.json \
+  --full-gate0-certificate /ABSOLUTE/PATH/gate0_full.json \
   --student-init-checkpoint /ABSOLUTE/PATH/student_init_seed1337.pt \
   --critic-checkpoint /ABSOLUTE/PATH/critic.pt \
   --normal-fraction 0.25 \
@@ -119,9 +121,10 @@ not infer gradient influence from raw loss magnitude alone.
 ## Paired three-seed validation
 
 ```bash
-scripts/run_three_seeds.sh \
-  /ABSOLUTE/PATH/frozen_manifest_with_normal.jsonl \
-  multiscale
+NORMAL_FRACTION=0.0 \
+CANONICAL_MANIFEST=/ABSOLUTE/PATH/canonical_manifest.jsonl \
+BASE_EXP_ROOT=/ABSOLUTE/PATH/three_seed_n0 \
+bash scripts/run_all_seeds.sh
 ```
 
 The script creates paired init checkpoints and one shared critic per seed, then
@@ -132,12 +135,7 @@ runs S0/S1/S2/S3. It does not evaluate test.
 Only after validation choices are frozen:
 
 ```bash
-scripts/evaluate_checkpoint.sh \
-  /ABSOLUTE/PATH/student_only.pt \
-  /ABSOLUTE/PATH/frozen_manifest.jsonl \
-  test \
-  <VALIDATION_SELECTED_THRESHOLD> \
-  /ABSOLUTE/PATH/test_result.json
+bash scripts/run_final_test.sh /ABSOLUTE/PATH/PROTOCOL_LOCK.json
 ```
 
 Never tune lambda, checkpoint, resolution, normal fraction, architecture or

@@ -29,6 +29,25 @@ def valid_crack_dice_loss(crack_logit, semantic_target, pair_valid, eps=1e-6):
     return dice[sample_active].mean()
 
 
+def balanced_semantic_cross_entropy(logits, target, class_weight=None):
+    """Average per-class pixel means so background cannot dominate the critic."""
+    pixel_loss = F.cross_entropy(logits, target.long(), reduction="none")
+    means, weights = [], []
+    for class_index in range(logits.shape[1]):
+        active = target == class_index
+        if active.any():
+            means.append(pixel_loss[active].mean())
+            weights.append(
+                logits.new_tensor(1.0)
+                if class_weight is None
+                else class_weight[class_index].to(logits)
+            )
+    if not means:
+        return logits.sum() * 0.0
+    stacked_weights = torch.stack(weights)
+    return (torch.stack(means) * stacked_weights).sum() / stacked_weights.sum()
+
+
 def oasis_rc_critic_loss(
     out,
     semantic_target,
@@ -60,9 +79,9 @@ def oasis_rc_critic_loss(
             "rgb_shuffle_pair_only": out["pair"].new_tensor(1.0),
         }
 
-    if class_weight is None:
-        class_weight = out["semantic"].new_tensor([1.0, 20.0, 12.0])
-    semantic = F.cross_entropy(out["semantic"], semantic_target.long(), weight=class_weight)
+    semantic = balanced_semantic_cross_entropy(
+        out["semantic"], semantic_target, class_weight=class_weight
+    )
     crack_dice = valid_crack_dice_loss(out["crack"], semantic_target, pair_valid)
     pos = mismatch_target.sum().clamp_min(1.0)
     neg = mismatch_target.numel() - pos
@@ -105,7 +124,9 @@ def oasis_rc_student_loss_v2(
     e_pred = relation_energy(pred_out, pair_weight)
     e_gt = relation_energy(gt_out, pair_weight).detach()
     e_corrupted = relation_energy(corrupted_out, pair_weight).detach()
-    rank_gt = F.softplus(e_pred - e_gt + margin).mean()
+    # Lower energy means a more valid RGB-mask relation. Enforce
+    # E(GT) + margin < E(prediction) < E(corruption) - margin.
+    rank_gt = F.softplus(e_gt - e_pred + margin).mean()
     rank_corrupted = F.softplus(e_pred - e_corrupted + margin).mean()
     q_pred = pred_out["mismatch"].sigmoid()
     fp = (((1.0 - target) * student_mask * q_pred).sum() /

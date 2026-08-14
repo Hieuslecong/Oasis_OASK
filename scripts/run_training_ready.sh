@@ -68,6 +68,17 @@ for f in "$TRAIN_MANIFEST" "$TRAIN_CERT" "$FULL_CERT" "$CONFIG"; do
   test -f "$f" || { echo "MISSING: $f" >&2; exit 2; }
 done
 
+mkdir -p "$EXP_ROOT/preflight"
+"$PYTHON" "$PACKAGE_ROOT/scripts/preflight_real_host.py" \
+  --config "$CONFIG" \
+  --manifest "$TRAIN_MANIFEST" \
+  --gate0-certificate "$TRAIN_CERT" \
+  --full-gate0-certificate "$FULL_CERT" \
+  --normal-fraction "$NORMAL_FRACTION" \
+  --student-kind "${STUDENT_KIND:-multiscale}" \
+  --student-width "${STUDENT_WIDTH:-16}" \
+  --out "$EXP_ROOT/preflight/seed${SEED}_${TRAINING_VARIANT}.json"
+
 "$PYTHON" - "$CONFIG" "$DETERMINISM_MODE" "$NORMAL_FRACTION" <<'PY'
 import json, os, sys, yaml, torch
 cfg=yaml.safe_load(open(sys.argv[1])); mode=sys.argv[2]; normal=float(sys.argv[3])

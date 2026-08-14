@@ -48,7 +48,13 @@ def dataset_content_sha256(manifest):
     return h.hexdigest()
 
 
-def verify_gate0_certificate(certificate_path, training_manifest, image_size, normal_policy):
+def verify_gate0_certificate(
+    certificate_path,
+    training_manifest,
+    image_size,
+    normal_policy,
+    full_certificate_path=None,
+):
     if not certificate_path:
         raise ValueError("official training requires --gate0-certificate")
     p = Path(certificate_path)
@@ -66,6 +72,14 @@ def verify_gate0_certificate(certificate_path, training_manifest, image_size, no
         raise ValueError("Gate 0 certificate resize_size mismatch")
     if cert.get("normal_policy") != normal_policy:
         raise ValueError("Gate 0 certificate normal_policy mismatch")
+    if not full_certificate_path:
+        raise ValueError("training-view verification requires full Gate 0 certificate")
+    full_path = Path(full_certificate_path)
+    full = json.loads(full_path.read_text())
+    if full.get("status") != "PASS" or full.get("scope") != "full_benchmark":
+        raise ValueError("full Gate 0 certificate must be PASS/full_benchmark")
+    if cert.get("parent_full_gate0_certificate_sha256") != sha256_file(full_path):
+        raise ValueError("training-view certificate parent full Gate 0 mismatch")
     return cert
 
 

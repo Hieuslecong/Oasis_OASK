@@ -7,11 +7,10 @@ export PYTHONPATH="$PACKAGE_ROOT/src${PYTHONPATH:+:$PYTHONPATH}"
 export CUBLAS_WORKSPACE_CONFIG="${CUBLAS_WORKSPACE_CONFIG:-:4096:8}"
 
 LOCK="${1:?usage: scripts/run_final_test.sh /path/to/PROTOCOL_LOCK.json}"
-MARKER="${LOCK}.test_opened"
 
 # IMPORTANT: this first phase validates only lock/checkpoint/manifest files and then
 # atomically creates OPENED. It intentionally does not open any dataset image/mask.
-readarray -t FIELDS < <("$PYTHON" - "$LOCK" "$MARKER" <<'PY'
+readarray -t FIELDS < <("$PYTHON" - "$LOCK" <<'PY'
 import datetime
 import hashlib
 import json
@@ -20,7 +19,6 @@ import sys
 from pathlib import Path
 
 lock_path = Path(sys.argv[1])
-marker_path = Path(sys.argv[2])
 d = json.loads(lock_path.read_text())
 required = (
     "selected_checkpoint",
@@ -30,6 +28,7 @@ required = (
     "dataset_content_sha256",
     "training_view_dataset_sha256",
     "full_gate0_certificate_sha256",
+    "full_gate0_certificate",
     "threshold",
     "hyperparameters_locked",
 )
@@ -53,6 +52,14 @@ if sha(d["selected_checkpoint"]) != d["selected_checkpoint_sha256"]:
     raise SystemExit("checkpoint SHA mismatch")
 if sha(d["manifest"]) != d["manifest_sha256"]:
     raise SystemExit("manifest SHA mismatch")
+if sha(d["full_gate0_certificate"]) != d["full_gate0_certificate_sha256"]:
+    raise SystemExit("full Gate 0 certificate SHA mismatch")
+full_certificate = json.loads(Path(d["full_gate0_certificate"]).read_text())
+if full_certificate.get("status") != "PASS" or full_certificate.get("scope") != "full_benchmark":
+    raise SystemExit("full Gate 0 certificate must be PASS/full_benchmark")
+marker_path = Path(d["full_gate0_certificate"]).resolve().with_name(
+    ".canonical_test_opened.json"
+)
 
 # Check that the locked threshold is exactly the validation-selected checkpoint threshold.
 import torch
@@ -95,6 +102,7 @@ print(d["selected_checkpoint"])
 print(d["manifest"])
 print(marker["output"])
 print(f"{threshold:.17g}")
+print(str(marker_path))
 PY
 )
 
@@ -102,6 +110,7 @@ CKPT="${FIELDS[0]}"
 MANIFEST="${FIELDS[1]}"
 OUT="${FIELDS[2]}"
 THRESHOLD="${FIELDS[3]}"
+MARKER="${FIELDS[4]}"
 
 # From this point on the canonical test is considered opened even if evaluation fails.
 "$PYTHON" -m oasis_cycle_aosk.evaluate_rc \

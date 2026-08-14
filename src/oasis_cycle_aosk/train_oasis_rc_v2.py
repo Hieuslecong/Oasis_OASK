@@ -35,7 +35,7 @@ from oasis_rc_v2.losses import (
     oasis_rc_student_loss_v2,
     segmentation_loss,
 )
-from oasis_rc_v2.protocol import dataset_content_sha256, verify_gate0_certificate
+from oasis_rc_v2.protocol import verify_gate0_certificate
 from oasis_rc_v2.qualification import critic_gate_passes
 from .aosk import oriented_consistency_loss
 from .data import ManifestDataset
@@ -318,6 +318,7 @@ def validate_loaded_critic(saved, args, cfg):
         args.normal_critic_weight,
         dataset_content_sha256_value=args._dataset_content_sha256,
         expected_hparams=expected,
+        full_gate0_certificate=args.full_gate0_certificate,
     )
 
 
@@ -480,7 +481,7 @@ def critic_metrics(critic, loader, device, normal_loader=None):
             # when it is semantically illegal for a given row (e.g. C6 on a
             # one-pixel crack), so forcing the full C1-C9 set keeps per-kind
             # diagnostic coverage without crashing on illegal rows.
-            wrong, invalid = make_corrupted_mask(
+            wrong, invalid, meta = make_corrupted_mask(
                 yc,
                 true_normal=torch.zeros(
                     yc.shape[0], device=device, dtype=torch.bool
@@ -488,14 +489,18 @@ def critic_metrics(critic, loader, device, normal_loader=None):
                 generator=generator,
                 forced_kinds=[kind] * yc.shape[0],
                 image=xc,
+                return_meta=True,
             )
             semantic, _, _ = build_targets(wrong, invalid)
             prediction = critic(xc, wrong)["semantic"].argmax(1)
-            tp = float(((prediction == 2) & (semantic == 2)).sum())
-            fn = float(((prediction != 2) & (semantic == 2)).sum())
-            per_kind[CORRUPTION_NAMES[kind]][0] += tp
-            per_kind[CORRUPTION_NAMES[kind]][1] += fn
-            per_kind[CORRUPTION_NAMES[kind]][2] += int(yc.shape[0])
+            for row_index, item in enumerate(meta):
+                actual = item["kind"]
+                target_row = semantic[row_index] == 2
+                tp = float(((prediction[row_index] == 2) & target_row).sum())
+                fn = float(((prediction[row_index] != 2) & target_row).sum())
+                per_kind[actual][0] += tp
+                per_kind[actual][1] += fn
+                per_kind[actual][2] += 1
 
     donor_masks = torch.cat(donor_bank, 0)[:64].to(device) if donor_bank else None
     normal_bg_ok = normal_invalid = normal_pixels = 0.0
@@ -943,7 +948,6 @@ def _build_parser():
     parser.add_argument("--manifest", required=True)
     parser.add_argument("--gate0-certificate", default=None)
     parser.add_argument("--full-gate0-certificate", default=None)
-    parser.add_argument("--allow-uncertified-manifest", action="store_true")
     parser.add_argument("--out", required=True)
     parser.add_argument(
         "--mode",
@@ -973,8 +977,6 @@ def _build_parser():
         choices=("off", "best_effort", "strict"),
         default=None,
     )
-    parser.add_argument("--allow-random-init", action="store_true")
-    parser.add_argument("--allow-inline-critic", action="store_true")
     parser.add_argument(
         "--student-kind",
         choices=(
@@ -1020,34 +1022,28 @@ def main():
     if not {"train", "val"}.issubset(splits):
         raise ValueError("training manifest must contain train and val")
     normal_policy = "train" if args.normal_fraction > 0 else "none"
-    if not args.allow_uncertified_manifest:
-        certificate = verify_gate0_certificate(
-            args.gate0_certificate,
-            args.manifest,
-            int(cfg["image_size"]),
-            normal_policy,
-        )
-        args._dataset_content_sha256 = certificate["dataset_content_sha256"]
-        if not args.full_gate0_certificate:
-            raise ValueError("official training requires --full-gate0-certificate")
-        full_certificate = json.loads(Path(args.full_gate0_certificate).read_text())
-        if full_certificate.get("status") != "PASS":
-            raise ValueError("full Gate 0 certificate status is not PASS")
-        if full_certificate.get("scope") != "full_benchmark":
-            raise ValueError("full Gate 0 certificate must have full_benchmark scope")
-    else:
-        args._dataset_content_sha256 = dataset_content_sha256(args.manifest)
+    certificate = verify_gate0_certificate(
+        args.gate0_certificate,
+        args.manifest,
+        int(cfg["image_size"]),
+        normal_policy,
+        args.full_gate0_certificate,
+    )
+    args._dataset_content_sha256 = certificate["dataset_content_sha256"]
+    full_certificate = json.loads(Path(args.full_gate0_certificate).read_text())
+    if full_certificate.get("status") != "PASS":
+        raise ValueError("full Gate 0 certificate status is not PASS")
+    if full_certificate.get("scope") != "full_benchmark":
+        raise ValueError("full Gate 0 certificate must have full_benchmark scope")
 
     if (
         args.mode != "critic"
         and not args.student_init_checkpoint
-        and not args.allow_random_init
     ):
         raise ValueError("official student runs require --student-init-checkpoint")
     if (
         args.mode in ("connected", "aosk_connected")
         and not args.critic_checkpoint
-        and not args.allow_inline_critic
     ):
         raise ValueError(
             "connected arms require one frozen --critic-checkpoint shared by S1/S3"

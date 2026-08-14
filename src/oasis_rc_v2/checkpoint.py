@@ -48,6 +48,7 @@ def validate_critic_checkpoint(
     normal_critic_weight,
     dataset_content_sha256_value=None,
     expected_hparams=None,
+    full_gate0_certificate=None,
 ):
     """Fail closed when a critic was trained under a different data/run contract."""
     _require_identity(saved, "critic")
@@ -73,6 +74,10 @@ def validate_critic_checkpoint(
         and saved["dataset_content_sha256"] != dataset_content_sha256_value
     ):
         raise ValueError("critic checkpoint dataset-content SHA256 does not match current data")
+    if not full_gate0_certificate:
+        raise ValueError("critic validation requires full Gate 0 certificate")
+    if saved["full_gate0_certificate_sha256"] != sha256_file(full_gate0_certificate):
+        raise ValueError("critic checkpoint full Gate 0 certificate mismatch")
 
     saved_cfg = saved.get("config", {})
     if int(saved_cfg.get("image_size", -1)) != int(cfg["image_size"]):
@@ -130,3 +135,16 @@ def validate_student_checkpoint(saved):
         raise ValueError("student checkpoint threshold_validation must be in (0,1)")
     if saved["dataset_content_sha256"] != saved["training_view_dataset_sha256"]:
         raise ValueError("student checkpoint training-view dataset hash mismatch")
+    if saved["mode"] not in {
+        "control", "connected", "aosk", "aosk_connected"
+    }:
+        raise ValueError("student checkpoint mode is invalid")
+    effective = saved["effective_config"]
+    if effective.get("student_kind") != saved["student_kind"]:
+        raise ValueError("student checkpoint effective student_kind mismatch")
+    if int(effective.get("student_width", -1)) != int(saved["student_width"]):
+        raise ValueError("student checkpoint effective student_width mismatch")
+    if int(effective.get("seed", -1)) != int(saved["seed"]):
+        raise ValueError("student checkpoint effective seed mismatch")
+    if saved["inference_contract"] != "RGB -> crack logits only":
+        raise ValueError("student checkpoint inference contract mismatch")

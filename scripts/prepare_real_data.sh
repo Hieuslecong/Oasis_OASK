@@ -69,7 +69,8 @@ echo "== DATA 7/9 N25 training-view Gate 0 =="
   --normal-policy train \
   --required-splits train val \
   --certificate-out "$CERT_N25" \
-  --certificate-scope training_view
+  --certificate-scope training_view \
+  --parent-full-certificate "$FULL_CERT"
 
 echo "== DATA 8/9 N0 crack-only training view =="
 "$PYTHON" "$PACKAGE_ROOT/scripts/build_training_view.py" \
@@ -84,7 +85,8 @@ echo "== DATA 9/9 N0 training-view Gate 0 =="
   --normal-policy none \
   --required-splits train val \
   --certificate-out "$CERT_N0" \
-  --certificate-scope training_view
+  --certificate-scope training_view \
+  --parent-full-certificate "$FULL_CERT"
 
 printf 'REAL_DATA_READY\nFULL_MANIFEST=%s\nTRAIN_N25=%s\nCERT_N25=%s\nTRAIN_N0=%s\nCERT_N0=%s\nFULL_CERT=%s\n' \
   "$FULL_MANIFEST" "$TRAIN_N25" "$CERT_N25" "$TRAIN_N0" "$CERT_N0" "$FULL_CERT"

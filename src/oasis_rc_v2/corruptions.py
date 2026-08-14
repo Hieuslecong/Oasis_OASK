@@ -92,7 +92,7 @@ def _eligible(is_normal, crack_pixel_count, has_other_crack_row):
     # DIFFERENT crack row to donate from, so it is legal only when the batch
     # holds another crack row. Row-count and pixel-count are different gates.
     if is_normal:
-        return (7, 8) if int(crack_pixel_count) > 0 else (8,)
+        return (7, 8) if has_other_crack_row else (8,)
     kinds = [0, 1, 2, 3, 4, 8]
     if int(crack_pixel_count) > 1:
         kinds.append(5)  # C6_wrong_connection needs >=2 px within this row
@@ -153,8 +153,8 @@ def make_corrupted_mask(
     meta = []
     for i in range(b):
         row_px = int(mask[i : i + 1].flatten().sum().item())
-        multi_row = crack_indices.numel() > 1
-        eligible = _eligible(bool(normal[i]), row_px, multi_row)
+        has_other_crack_row = bool((crack_indices != i).any().item())
+        eligible = _eligible(bool(normal[i]), row_px, has_other_crack_row)
         requested_kind = None
         if forced_kinds is None:
             kinds = _ordered(eligible, mask.device, generator)

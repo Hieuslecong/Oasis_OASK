@@ -11,7 +11,6 @@ from pathlib import Path
 
 import torch
 import yaml
-from torch.utils.data import DataLoader
 
 from oasis_cycle_aosk.data import ManifestDataset
 from oasis_cycle_aosk.train_oasis_rc_v2 import make_student
@@ -33,11 +32,13 @@ def main():
     parser.add_argument("--config", required=True)
     parser.add_argument("--manifest", required=True)
     parser.add_argument("--gate0-certificate", required=True)
+    parser.add_argument("--full-gate0-certificate", required=True)
     parser.add_argument("--out", required=True)
     parser.add_argument("--student-kind", default="multiscale")
     parser.add_argument("--student-width", type=int, default=16)
     parser.add_argument("--normal-fraction", type=float, choices=(0.0, 0.25), default=0.0)
     args = parser.parse_args()
+    repo_root = Path(__file__).resolve().parents[1]
 
     cfg = yaml.safe_load(Path(args.config).read_text())
     if torch.device(cfg["device"]).type != "cuda" or not torch.cuda.is_available():
@@ -47,16 +48,30 @@ def main():
         args.manifest,
         cfg["image_size"],
         "train" if args.normal_fraction > 0 else "none",
+        args.full_gate0_certificate,
     )
     device = torch.device(cfg["device"])
-    loader = DataLoader(
-        ManifestDataset(args.manifest, "train", cfg["image_size"]),
-        batch_size=cfg["batch_size"],
-        shuffle=False,
-        num_workers=cfg.get("num_workers", 0),
-        pin_memory=True,
+    dataset = ManifestDataset(
+        args.manifest, "train", cfg["image_size"], return_is_normal=True
     )
-    x, y = next(iter(loader))
+    crack_rows, normal_rows = [], []
+    for index in range(len(dataset)):
+        sample = dataset[index]
+        target = normal_rows if bool(sample[2]) else crack_rows
+        if len(target) < 2:
+            target.append(sample)
+        if len(crack_rows) >= 2 and (
+            args.normal_fraction == 0.0 or len(normal_rows) >= 1
+        ):
+            break
+    if len(crack_rows) < 2:
+        raise SystemExit("preflight requires two crack-positive training rows for C7")
+    if args.normal_fraction > 0 and not normal_rows:
+        raise SystemExit("N25 preflight requires a true-normal training row for C8")
+    samples = crack_rows + (normal_rows[:1] if args.normal_fraction > 0 else [])
+    x = torch.stack([sample[0] for sample in samples])
+    y = torch.stack([sample[1] for sample in samples])
+    true_normal = torch.stack([sample[2] for sample in samples])
     x, y = x.to(device, non_blocking=True), y.to(device, non_blocking=True)
     student = make_student(args.student_kind, args.student_width).to(device)
     critic = OASISRCv2Critic(width=int(cfg.get("critic_width", 8))).to(device)
@@ -72,7 +87,7 @@ def main():
         for kind in range(len(CORRUPTION_NAMES)):
             wrong, invalid, meta = make_corrupted_mask(
                 y,
-                true_normal=torch.zeros(y.shape[0], device=device, dtype=torch.bool),
+                true_normal=true_normal.to(device),
                 generator=generator,
                 forced_kinds=[kind] * y.shape[0],
                 image=x,
@@ -86,6 +101,12 @@ def main():
                     raise SystemExit(f"non-finite critic output for request {kind}")
         if not all(torch.isfinite(value).all() for value in clean.values()):
             raise SystemExit("non-finite critic clean output")
+    expected = set(CORRUPTION_NAMES)
+    if args.normal_fraction == 0.0:
+        expected.remove("C8_crack_on_normal")
+    missing = sorted(expected - observed)
+    if missing:
+        raise SystemExit("preflight did not exercise corruption kinds: " + ", ".join(missing))
 
     output = Path(args.out)
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -94,6 +115,16 @@ def main():
         torch.load(handle.name, map_location="cpu", weights_only=False)
     props = torch.cuda.get_device_properties(device)
     disk = shutil.disk_usage(output.parent)
+    if props.total_memory < 20 * 1024**3:
+        raise SystemExit("official A30 run requires at least 20 GiB GPU memory")
+    if disk.free < 20 * 1024**3:
+        raise SystemExit("official run requires at least 20 GiB free output storage")
+    git_head = command("git", "-C", str(repo_root), "rev-parse", "HEAD")
+    git_status = command("git", "-C", str(repo_root), "status", "--porcelain")
+    if git_head.startswith("UNAVAILABLE:") or git_status.startswith("UNAVAILABLE:"):
+        raise SystemExit("official run requires readable git provenance")
+    if git_status:
+        raise SystemExit("official run requires a clean git worktree")
     report = {
         "status": "PASS",
         "python": platform.python_version(),
@@ -105,8 +136,8 @@ def main():
         "gpu_total_memory": props.total_memory,
         "peak_allocated_bytes": torch.cuda.max_memory_allocated(device),
         "driver": command("nvidia-smi", "--query-gpu=driver_version", "--format=csv,noheader"),
-        "git_head": command("git", "rev-parse", "HEAD"),
-        "git_dirty": bool(command("git", "status", "--porcelain")),
+        "git_head": git_head,
+        "git_dirty": False,
         "dataset_content_sha256": certificate["dataset_content_sha256"],
         "batch_size": cfg["batch_size"],
         "num_workers": cfg.get("num_workers", 0),

@@ -117,6 +117,8 @@ def test_real_file_pipeline_reaches_optimizer_and_checkpoint(tmp_path):
             cert32,
             "--certificate-scope",
             "training_view",
+            "--parent-full-certificate",
+            derived / "gate0_full.json",
         ]
     )
 

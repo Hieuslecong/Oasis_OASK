@@ -3,6 +3,21 @@ torch=pytest.importorskip("torch")
 from oasis_rc_v2.critic import OASISRCv2Critic
 from oasis_rc_v2.losses import oasis_rc_student_loss_v2
 
+
+def _relation(mismatch_logit):
+ return {
+  "mismatch": torch.full((1,1,1,1), mismatch_logit),
+  "pair": torch.zeros(1,1),
+ }
+
+
+def test_ranking_prefers_prediction_between_gt_and_corruption():
+ target=torch.ones(1,1,1,1);student_mask=torch.zeros_like(target)
+ gt=_relation(-8.0);corrupt=_relation(8.0)
+ bad,_=oasis_rc_student_loss_v2(_relation(-6.0),gt,corrupt,student_mask,target,pair_weight=0.0)
+ ordered,_=oasis_rc_student_loss_v2(_relation(0.0),gt,corrupt,student_mask,target,pair_weight=0.0)
+ assert ordered < bad
+
 def test_v2_corrupted_ranking_has_student_gradient_only():
  c=OASISRCv2Critic(width=4)
  for p in c.parameters():p.requires_grad_(False)

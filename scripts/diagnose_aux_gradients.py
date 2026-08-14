@@ -25,11 +25,17 @@ def _load_student(model, path):
     model.load_state_dict(saved.get("student", saved) if isinstance(saved, dict) else saved)
 
 
-def _load_critic(path, manifest, cfg, normal_fraction, normal_critic_weight, device):
+def _load_critic(
+    path, manifest, cfg, normal_fraction, normal_critic_weight,
+    full_gate0_certificate, device,
+):
     if not path:
         return None
     saved = torch.load(path, map_location=device, weights_only=False)
-    validate_critic_checkpoint(saved, manifest, cfg, normal_fraction, normal_critic_weight)
+    validate_critic_checkpoint(
+        saved, manifest, cfg, normal_fraction, normal_critic_weight,
+        full_gate0_certificate=full_gate0_certificate,
+    )
     critic = OASISRCv2Critic(width=int(saved["width"])).to(device)
     critic.load_state_dict(saved["critic"])
     critic.eval()
@@ -70,6 +76,7 @@ def main():
     p.add_argument("--config", required=True)
     p.add_argument("--manifest", required=True)
     p.add_argument("--gate0-certificate", required=True)
+    p.add_argument("--full-gate0-certificate", required=True)
     p.add_argument("--student-init-checkpoint", required=True)
     p.add_argument("--critic-checkpoint", default=None)
     p.add_argument("--student-kind", default="multiscale")
@@ -92,6 +99,7 @@ def main():
         args.manifest,
         int(cfg["image_size"]),
         normal_policy,
+        args.full_gate0_certificate,
     )
     seed = int(cfg["seed"])
     seed_all(seed)
@@ -105,6 +113,7 @@ def main():
         cfg,
         args.normal_fraction,
         args.normal_critic_weight,
+        args.full_gate0_certificate,
         device,
     )
     corruption_gen = make_generator(device, seed + 20001)
