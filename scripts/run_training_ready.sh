@@ -51,14 +51,14 @@ if [ "${PREPARE_DATA:-1}" = "1" ]; then
     CANONICAL_MANIFEST="$CANONICAL_MANIFEST" \
     PYTHON="$PYTHON" \
     EMPTY_CERTIFICATION_CSV="${EMPTY_CERTIFICATION_CSV:-}" \
-    "$PACKAGE_ROOT/scripts/prepare_n0_data.sh"
+    bash "$PACKAGE_ROOT/scripts/prepare_n0_data.sh"
   else
     DATA_ROOT="$DATA_ROOT" \
     CANONICAL_MANIFEST="$CANONICAL_MANIFEST" \
     NORMAL_ROOT="$NORMAL_ROOT" \
     PYTHON="$PYTHON" \
     EMPTY_CERTIFICATION_CSV="${EMPTY_CERTIFICATION_CSV:-}" \
-    "$PACKAGE_ROOT/scripts/prepare_real_data.sh"
+    bash "$PACKAGE_ROOT/scripts/prepare_real_data.sh"
   fi
 fi
 
@@ -136,7 +136,7 @@ if [ "${RUN_ARMS:-1}" = "1" ]; then
   LAMBDA_OASIS="$LAMBDA_OASIS" \
   LAMBDA_AOSK="$LAMBDA_AOSK" \
   DETERMINISM_MODE="$DETERMINISM_MODE" \
-  "$PACKAGE_ROOT/scripts/run_validation_arms.sh"
+  bash "$PACKAGE_ROOT/scripts/run_validation_arms.sh"
 fi
 
 echo "TRAINING_PIPELINE_READY seed=$SEED"
