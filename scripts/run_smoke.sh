@@ -6,6 +6,7 @@ MANIFEST="${1:?Usage: scripts/run_smoke.sh trainval_manifest.jsonl gate0_trainin
 GATE0_CERTIFICATE="${2:?Missing Gate 0 training-view certificate}"
 STUDENT_INIT="${3:?Missing canonical student init checkpoint}"
 STUDENT_KIND="${4:-multiscale}"
+STUDENT_WIDTH="${STUDENT_WIDTH:-16}"
 CONFIG="${CONFIG:-$PACKAGE_ROOT/configs/canonical_gpu_256_seed1337.yaml}"
 NORMAL_FRACTION="${NORMAL_FRACTION:?set NORMAL_FRACTION explicitly: 0.0 or 0.25}"
 RUN_ROOT="${RUN_ROOT:-$PACKAGE_ROOT/runs/four_arm_micro_${STUDENT_KIND}}"
@@ -48,7 +49,7 @@ run() {
   local name="$1" mode="$2"; shift 2
   "$PYTHON" -m oasis_cycle_aosk.train_oasis_rc_v2 \
     --config "$CONFIG" --manifest "$MANIFEST" --gate0-certificate "$GATE0_CERTIFICATE" \
-    --out "$RUN_ROOT/$name" --mode "$mode" --student-kind "$STUDENT_KIND" \
+    --out "$RUN_ROOT/$name" --mode "$mode" --student-kind "$STUDENT_KIND" --student-width "$STUDENT_WIDTH" \
     --epochs "$SMOKE_EPOCHS" --warmup "$SMOKE_WARMUP" --ramp-epochs "$SMOKE_RAMP_EPOCHS" \
     --normal-fraction "$NORMAL_FRACTION" --determinism-mode "$DETERMINISM_MODE" \
     --student-init-checkpoint "$STUDENT_INIT" "$@"
@@ -60,6 +61,8 @@ run S2_aosk aosk --lambda-aosk 0.01
 run S3_oasis_rc_v2_aosk aosk_connected --lambda-oasis 0.001 --lambda-aosk 0.01 --critic-checkpoint "$CRITIC"
 
 echo "Four-arm validation micro-smoke complete: $RUN_ROOT"
+echo "STUDENT_KIND=$STUDENT_KIND"
+echo "STUDENT_WIDTH=$STUDENT_WIDTH"
 echo "SMOKE_CRITIC_EPOCHS=$SMOKE_CRITIC_EPOCHS"
 echo "SMOKE_EPOCHS=$SMOKE_EPOCHS"
 echo "AOSK_VARIANT=oriented-consistency-v1"
