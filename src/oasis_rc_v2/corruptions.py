@@ -89,9 +89,10 @@ def _apply(kind, mask, i, crack_indices, generator, image=None, is_normal=False)
 def _eligible(is_normal, crack_count):
     if is_normal:
         return (7, 8) if int(crack_count) > 0 else (8,)
-    kinds = [0, 1, 2, 3, 4, 5, 8]
+    kinds = [0, 1, 2, 3, 4, 8]
     if int(crack_count) > 1:
-        kinds.append(6)
+        kinds.append(5)  # C6_wrong_connection connects two distant crack points
+        kinds.append(6)  # C7_donor_mask needs a second crack to donate from
     return tuple(kinds)
 
 
