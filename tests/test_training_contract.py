@@ -195,6 +195,9 @@ def test_critic_provenance_and_schema_fail_closed(tmp_path):
         "rgb_mask_weight": 1.0,
         "normal_critic_weight": 1.0,
         "normal_fraction": 0.25,
+        "rgb_shuffle_pair_only": True,
+        "mask_flip_training": False,
+        "mask_variant_contract": "operator-preserved-v1",
     }
     saved = {
         "checkpoint_schema": CHECKPOINT_SCHEMA,
@@ -226,6 +229,11 @@ def test_critic_provenance_and_schema_fail_closed(tmp_path):
     bad_data["dataset_content_sha256"] = "0" * 64
     with pytest.raises(ValueError, match="dataset-content"):
         validate_loaded_critic(bad_data, args, cfg)
+
+    bad_contract = copy.deepcopy(saved)
+    bad_contract["training_hparams"].pop("mask_flip_training")
+    with pytest.raises(ValueError, match="mask_flip_training"):
+        validate_loaded_critic(bad_contract, args, cfg)
 
 
 def test_sha256_exact(tmp_path):
