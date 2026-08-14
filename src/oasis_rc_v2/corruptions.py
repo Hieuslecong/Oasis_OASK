@@ -86,13 +86,18 @@ def _apply(kind, mask, i, crack_indices, generator, image=None, is_normal=False)
     return (candidate > 0.5).float(), donor_index
 
 
-def _eligible(is_normal, crack_count):
+def _eligible(is_normal, crack_pixel_count, has_other_crack_row):
+    # C6_wrong_connection joins two distant points inside THIS row, so it is
+    # legal only when the row itself has >=2 crack pixels. C7_donor_mask needs a
+    # DIFFERENT crack row to donate from, so it is legal only when the batch
+    # holds another crack row. Row-count and pixel-count are different gates.
     if is_normal:
-        return (7, 8) if int(crack_count) > 0 else (8,)
+        return (7, 8) if int(crack_pixel_count) > 0 else (8,)
     kinds = [0, 1, 2, 3, 4, 8]
-    if int(crack_count) > 1:
-        kinds.append(5)  # C6_wrong_connection connects two distant crack points
-        kinds.append(6)  # C7_donor_mask needs a second crack to donate from
+    if int(crack_pixel_count) > 1:
+        kinds.append(5)  # C6_wrong_connection needs >=2 px within this row
+    if has_other_crack_row:
+        kinds.append(6)  # C7_donor_mask needs another crack row to donate from
     return tuple(kinds)
 
 
@@ -147,7 +152,9 @@ def make_corrupted_mask(
     wrong = torch.empty_like(mask)
     meta = []
     for i in range(b):
-        eligible = _eligible(bool(normal[i]), crack_indices.numel())
+        row_px = int(mask[i : i + 1].flatten().sum().item())
+        multi_row = crack_indices.numel() > 1
+        eligible = _eligible(bool(normal[i]), row_px, multi_row)
         requested_kind = None
         if forced_kinds is None:
             kinds = _ordered(eligible, mask.device, generator)

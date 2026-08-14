@@ -457,10 +457,11 @@ def critic_metrics(critic, loader, device, normal_loader=None):
                 .tolist()
             )
 
-        kinds = [0, 1, 2, 3, 4, 5, 8]
-        if yc.shape[0] >= 2:
-            kinds.append(6)
-        for kind in kinds:
+        for kind in range(9):
+            # make_corrupted_mask resamples a forced kind to an eligible operator
+            # when it is semantically illegal for a given row (e.g. C6 on a
+            # one-pixel crack), so forcing the full C1-C9 set keeps per-kind
+            # diagnostic coverage without crashing on illegal rows.
             wrong, invalid = make_corrupted_mask(
                 yc,
                 true_normal=torch.zeros(
