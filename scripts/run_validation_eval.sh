@@ -7,9 +7,10 @@ EXP_ROOT="${EXP_ROOT:?set EXP_ROOT}"
 PYTHON="${PYTHON:-/hdd1/hieulc/Oasis_AOSK/.venv-oasis-rc-v2-gpu/bin/python}"
 export PYTHONPATH="$PACKAGE_ROOT/src${PYTHONPATH:+:$PYTHONPATH}"
 
-MANIFEST="${MANIFEST:-$EXP_ROOT/data/manifest_trainval_with_normal.jsonl}"
+MANIFEST="${MANIFEST:?set MANIFEST explicitly to the certified train/val view}"
 ARM_ROOT="${ARM_ROOT:-$EXP_ROOT/arms}"
 EVAL_ROOT="${EVAL_ROOT:-$EXP_ROOT/validation_eval}"
+DEVICE="${DEVICE:-cuda}"
 mkdir -p "$EVAL_ROOT"
 
 test -f "$MANIFEST" || { echo "MISSING TRAIN/VAL MANIFEST: $MANIFEST" >&2; exit 2; }
@@ -21,8 +22,8 @@ fi
 arms=(
   S0_control
   S1_oasis_rc_v2
-  S2_aosk_topology
-  S3_oasis_rc_v2_aosk_topology
+  S2_aosk
+  S3_oasis_rc_v2_aosk
 )
 
 for name in "${arms[@]}"; do
@@ -34,10 +35,10 @@ for name in "${arms[@]}"; do
     --checkpoint "$ckpt" \
     --manifest "$MANIFEST" \
     --split val \
-    --device cuda \
+    --device "$DEVICE" \
     --out "$out" 2>&1 | tee "$EVAL_ROOT/${name}_val.log"
 done
 
 echo "VALIDATION_EVAL_DONE $(date -u +%FT%TZ)"
-echo "AOSK_VARIANT=centerline-cldice-v1"
+echo "AOSK_VARIANT=oriented-consistency-v1"
 echo "TEST_FIREWALL=CLOSED"
