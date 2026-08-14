@@ -33,7 +33,6 @@ jobs:
           bash -n scripts/run_smoke.sh
           bash -n scripts/run_full_smoke_train_test.sh
           bash -n scripts/run_lightweight_smoke.sh
-          bash -n scripts/run_three_seeds.sh
           bash -n scripts/evaluate_checkpoint.sh
           bash -n scripts/run_validation_arms.sh
           bash -n scripts/run_validation_eval.sh
@@ -52,4 +51,6 @@ jobs:
             scripts/run_validation_arms.sh \
             scripts/run_validation_eval.sh
           grep -q 'prepare_n0_data.sh' scripts/run_training_ready.sh
-          grep -q 'DEPRECATED' scripts/run_three_seeds.sh
+          ! grep -R 'train_oasis_rc_v2_legacy' src scripts tests
+          grep -q 'CHECKPOINT_SCHEMA = 3' src/oasis_rc_v2/checkpoint.py
+          grep -q 'IMPLEMENTATION_VERSION = "2.0.4"' src/oasis_rc_v2/checkpoint.py

@@ -2,7 +2,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from oasis_cycle_aosk.critic_contract_v202 import validate_loaded_critic
+from oasis_cycle_aosk.train_oasis_rc_v2 import validate_loaded_critic
 from oasis_rc_v2.checkpoint import (
     CHECKPOINT_SCHEMA, EXPERIMENT_ID, IMPLEMENTATION_VERSION, METHOD_VERSION,
 )
@@ -20,6 +20,7 @@ def test_strict_validator_rejects_missing_v202_flags(tmp_path):
         "checkpoint_schema": CHECKPOINT_SCHEMA, "experiment_id": EXPERIMENT_ID,
         "method_version": METHOD_VERSION, "implementation_version": IMPLEMENTATION_VERSION,
         "critic": {}, "width": 8, "config": cfg,
+        "seed": 1337, "full_gate0_certificate_sha256": "f" * 64,
         "manifest_file_sha256": __import__("hashlib").sha256(manifest.read_bytes()).hexdigest(),
         "dataset_content_sha256": "d" * 64,
         "normal_fraction": 0.25, "normal_critic_weight": 1.0,

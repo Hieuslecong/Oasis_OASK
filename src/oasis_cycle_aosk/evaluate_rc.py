@@ -60,7 +60,9 @@ def build(kind, width):
         return FastSCNNLite(width=width)
     if kind == "bisenet":
         return BiSeNetTiny(width=width)
-    return MultiScaleLightweightSegmenter(width=width)
+    if kind == "multiscale":
+        return MultiScaleLightweightSegmenter(width=width)
+    raise ValueError(f"unknown student kind: {kind!r}")
 
 
 def manifest_splits(path):

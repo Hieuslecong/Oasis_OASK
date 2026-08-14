@@ -130,6 +130,7 @@ def _good_critic_metrics():
         "normal_supervision_expected": True,
         "valid_crack_predictions": 20,
         "corruption_invalid_recall": {name: 0.80 for name in names},
+        "corruption_samples": {name: 16 for name in names},
     }
 
 

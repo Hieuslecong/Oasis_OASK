@@ -143,8 +143,19 @@ def test_student_checkpoint_rejects_legacy_and_wrong_implementation():
         "method_version": METHOD_VERSION,
         "implementation_version": IMPLEMENTATION_VERSION,
         "student": {},
+        "student_kind": "multiscale",
+        "student_width": 16,
+        "seed": 1337,
+        "mode": "control",
+        "effective_config": {"image_size": 256},
+        "threshold_validation": 0.5,
         "manifest_file_sha256": "a" * 64,
         "dataset_content_sha256": "b" * 64,
+        "training_view_dataset_sha256": "b" * 64,
+        "gate0_certificate_sha256": "c" * 64,
+        "full_gate0_certificate_sha256": "d" * 64,
+        "student_init_sha256": "e" * 64,
+        "inference_contract": "RGB -> crack logits only",
     }
     validate_student_checkpoint(good)
     bad = dict(good)

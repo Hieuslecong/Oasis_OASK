@@ -2,6 +2,8 @@ import hashlib
 import json
 from pathlib import Path
 
+import torch
+
 from .checkpoint import sha256_file
 
 
@@ -85,6 +87,15 @@ def verify_final_test_authorization(
         raise ValueError("final-test authorization manifest SHA256 mismatch")
     if auth.get("dataset_content_sha256") != dataset_content_sha256(manifest):
         raise ValueError("final-test authorization dataset-content SHA256 mismatch")
+    checkpoint_data = torch.load(checkpoint, map_location="cpu", weights_only=False)
+    if auth.get("training_view_dataset_sha256") != checkpoint_data.get(
+        "training_view_dataset_sha256"
+    ):
+        raise ValueError("final-test authorization training-view provenance mismatch")
+    if auth.get("full_gate0_certificate_sha256") != checkpoint_data.get(
+        "full_gate0_certificate_sha256"
+    ):
+        raise ValueError("final-test authorization full-benchmark provenance mismatch")
     if abs(float(auth.get("threshold")) - float(threshold)) > 1e-12:
         raise ValueError("final-test authorization threshold mismatch")
     return auth

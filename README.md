@@ -4,9 +4,9 @@ This branch contains the source-anchored reconstructed OASIS-RC v2 implementatio
 
 ```text
 experiment_id          = oasis-rc-v2-relational-hard-negative
-checkpoint_schema      = 2
+checkpoint_schema      = 3
 method_version         = OASIS-RC-v2
-implementation_version = 2.0.3
+implementation_version = 2.0.4
 ```
 
 ## Scientific contract
@@ -31,7 +31,7 @@ S3_oasis_rc_v2_aosk
 
 `L_seg = BCE + Dice`.
 
-The canonical AOSK variant in 2.0.3 is the original source-anchored `oriented-consistency-v1`. The centerline/clDice implementation remains available only as an optional ablation; it is not the official S2/S3 objective.
+The canonical AOSK variant in 2.0.4 is the original source-anchored `oriented-consistency-v1`. The centerline/clDice implementation remains available only as an optional ablation; it is not the official S2/S3 objective.
 
 OASIS-RC and AOSK are training-only. Deployment is always:
 
@@ -58,7 +58,7 @@ separate RGB/mask encoders
 -> crack / mismatch / pair-validity outputs
 ```
 
-The semantic logits are the inherited hierarchical composition from crack and mismatch logits. Implementation 2.0.3 does not redesign the critic head structure.
+The semantic logits are the inherited hierarchical composition from crack and mismatch logits. Implementation 2.0.4 does not redesign the critic head structure.
 
 ## C1-C9 hard-negative contract
 
@@ -74,7 +74,7 @@ C8 crack mask on true-normal RGB
 C9 texture-guided false-positive blob
 ```
 
-Hardening retained in 2.0.3:
+Hardening retained in 2.0.4:
 
 - operator identity is preserved; no arbitrary pixel rescue;
 - C7 requires a non-self crack-positive donor;
@@ -252,7 +252,7 @@ Canonical seeds are exactly:
 31415
 ```
 
-Use only `scripts/run_all_seeds.sh`. The old `run_three_seeds.sh` smoke runner is intentionally deprecated to prevent accidental paper runs with the wrong protocol.
+Use only `scripts/run_all_seeds.sh`. The obsolete `run_three_seeds.sh` runner has been removed.
 
 ### N0
 

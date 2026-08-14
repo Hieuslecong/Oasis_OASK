@@ -26,6 +26,8 @@ BASE_CORRUPTIONS = (
     "C9_texture_fp_blob",
 )
 
+MIN_SAMPLES_PER_CORRUPTION = 16
+
 
 def critic_gate_failures(metrics):
     failures = []
@@ -61,12 +63,15 @@ def critic_gate_failures(metrics):
         failures.append("no_background_only_collapse")
 
     per_kind = metrics.get("corruption_invalid_recall", {})
+    per_kind_samples = metrics.get("corruption_samples", {})
     required_corruptions = list(BASE_CORRUPTIONS)
     if normal_expected:
         required_corruptions.append("C8_crack_on_normal")
     for name in required_corruptions:
         if per_kind.get(name) is None:
             failures.append(f"{name}:samples>0")
+        if int(per_kind_samples.get(name, 0)) < MIN_SAMPLES_PER_CORRUPTION:
+            failures.append(f"{name}:samples>={MIN_SAMPLES_PER_CORRUPTION}")
     return failures
 
 

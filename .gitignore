@@ -9,3 +9,8 @@ dist/
 .pytest_cache/
 .venv*/
 venv/
+
+# Runtime artifacts belong under the experiment root, not in Git.
+artifacts/*
+!artifacts/README.md
+runs/

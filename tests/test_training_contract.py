@@ -206,6 +206,8 @@ def test_critic_provenance_and_schema_fail_closed(tmp_path):
         "implementation_version": IMPLEMENTATION_VERSION,
         "critic": {},
         "width": 8,
+        "seed": 1337,
+        "full_gate0_certificate_sha256": "f" * 64,
         "config": cfg,
         "manifest_file_sha256": sha256_file(manifest),
         "dataset_content_sha256": dataset_sha,

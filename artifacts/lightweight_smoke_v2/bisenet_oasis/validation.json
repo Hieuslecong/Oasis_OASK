@@ -1,9 +1,0 @@
-{
-  "precision": 0.12899442978579742,
-  "recall": 0.1558625575626003,
-  "dice": 0.1411613731150616,
-  "iou": 0.07594062823604078,
-  "normal_fp_pixels_mean": 217.6,
-  "normal_fp_images": 5,
-  "threshold": 0.25
-}

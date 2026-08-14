@@ -1,0 +1,11 @@
+{
+  "method_version": "OASIS-RC-v2",
+  "implementation_version": "2.0.4",
+  "checkpoint_schema": 3,
+  "image_size": 256,
+  "student_kind": "multiscale",
+  "student_width": 16,
+  "seeds": [1337, 2027, 31415],
+  "protocols": {"N0": 0.0, "N25": 0.25},
+  "canonical_test_policy": "exactly-once-after-protocol-lock"
+}

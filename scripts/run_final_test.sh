@@ -28,6 +28,8 @@ required = (
     "manifest",
     "manifest_sha256",
     "dataset_content_sha256",
+    "training_view_dataset_sha256",
+    "full_gate0_certificate_sha256",
     "threshold",
     "hyperparameters_locked",
 )
@@ -60,6 +62,10 @@ if abs(ck_threshold - threshold) > 1e-12:
     raise SystemExit("lock threshold does not equal checkpoint threshold_validation")
 if ck.get("dataset_content_sha256") is None:
     raise SystemExit("checkpoint missing dataset_content_sha256")
+if ck.get("training_view_dataset_sha256") != d["training_view_dataset_sha256"]:
+    raise SystemExit("lock training-view dataset SHA does not match checkpoint")
+if ck.get("full_gate0_certificate_sha256") != d["full_gate0_certificate_sha256"]:
+    raise SystemExit("lock full Gate 0 certificate SHA does not match checkpoint")
 
 marker = {
     "state": "OPENED",
@@ -71,6 +77,8 @@ marker = {
     "manifest": d["manifest"],
     "manifest_sha256": d["manifest_sha256"],
     "dataset_content_sha256": d["dataset_content_sha256"],
+    "training_view_dataset_sha256": d["training_view_dataset_sha256"],
+    "full_gate0_certificate_sha256": d["full_gate0_certificate_sha256"],
     "threshold": threshold,
     "output": d.get("output", str(lock_path.with_name("final_test.json"))),
 }

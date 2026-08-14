@@ -2,8 +2,8 @@ import hashlib
 from pathlib import Path
 
 EXPERIMENT_ID = "oasis-rc-v2-relational-hard-negative"
-CHECKPOINT_SCHEMA = 2
-IMPLEMENTATION_VERSION = "2.0.3"
+CHECKPOINT_SCHEMA = 3
+IMPLEMENTATION_VERSION = "2.0.4"
 METHOD_VERSION = "OASIS-RC-v2"
 
 
@@ -60,6 +60,8 @@ def validate_critic_checkpoint(
         "normal_critic_weight",
         "training_hparams",
         "width",
+        "seed",
+        "full_gate0_certificate_sha256",
     )
     missing = [k for k in required if k not in saved]
     if missing:
@@ -100,7 +102,31 @@ def validate_student_checkpoint(saved):
     forbidden = {"critic", "aosk", "generator", "discriminator"}.intersection(saved)
     if forbidden:
         raise ValueError(f"deployment checkpoint contains training-only state: {sorted(forbidden)}")
-    required = ("student", "manifest_file_sha256", "dataset_content_sha256")
+    required = (
+        "student",
+        "student_kind",
+        "student_width",
+        "seed",
+        "mode",
+        "effective_config",
+        "threshold_validation",
+        "manifest_file_sha256",
+        "dataset_content_sha256",
+        "training_view_dataset_sha256",
+        "gate0_certificate_sha256",
+        "full_gate0_certificate_sha256",
+        "student_init_sha256",
+        "inference_contract",
+    )
     missing = [k for k in required if k not in saved]
     if missing:
         raise ValueError("student checkpoint missing: " + ", ".join(missing))
+    if saved["student_kind"] not in {
+        "multiscale", "lightweight", "mobilenetv3", "dsunet", "fastscnn", "bisenet"
+    }:
+        raise ValueError("student checkpoint has unknown student_kind")
+    threshold = float(saved["threshold_validation"])
+    if not 0.0 < threshold < 1.0:
+        raise ValueError("student checkpoint threshold_validation must be in (0,1)")
+    if saved["dataset_content_sha256"] != saved["training_view_dataset_sha256"]:
+        raise ValueError("student checkpoint training-view dataset hash mismatch")
