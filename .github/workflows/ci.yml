@@ -37,7 +37,19 @@ jobs:
           bash -n scripts/evaluate_checkpoint.sh
           bash -n scripts/run_validation_arms.sh
           bash -n scripts/run_validation_eval.sh
+          bash -n scripts/prepare_n0_data.sh
           bash -n scripts/prepare_real_data.sh
           bash -n scripts/run_training_ready.sh
           bash -n scripts/run_all_seeds.sh
           bash -n scripts/run_final_test.sh
+      - name: Canonical method contract
+        run: |
+          grep -q 'AOSK_VARIANT = "oriented-consistency-v1"' src/oasis_cycle_aosk/train_oasis_rc_v2.py
+          grep -q 'AOSK_DEFAULT_VARIANT = AOSK_ORIENTED_VARIANT' src/oasis_cycle_aosk/aosk_dispatch.py
+          ! grep -E 'aosk_topology|centerline-cldice-v1' \
+            scripts/run_smoke.sh \
+            scripts/run_full_smoke_train_test.sh \
+            scripts/run_validation_arms.sh \
+            scripts/run_validation_eval.sh
+          grep -q 'prepare_n0_data.sh' scripts/run_training_ready.sh
+          grep -q 'DEPRECATED' scripts/run_three_seeds.sh
