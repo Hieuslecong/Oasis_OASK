@@ -4,14 +4,14 @@ PACKAGE_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$PACKAGE_ROOT"
 
 CANONICAL_MANIFEST="${CANONICAL_MANIFEST:?set CANONICAL_MANIFEST}"
-NORMAL_ROOT="${NORMAL_ROOT:?set NORMAL_ROOT}"
+NORMAL_ROOT="${NORMAL_ROOT:-}"
 PYTHON="${PYTHON:-/hdd1/hieulc/Oasis_AOSK/.venv-oasis-rc-v2-gpu/bin/python}"
 SEED="${SEED:-1337}"
 CONFIG="${CONFIG:-$PACKAGE_ROOT/configs/canonical_gpu_256_seed${SEED}.yaml}"
 EXP_ROOT="${EXP_ROOT:-$PACKAGE_ROOT/runs/full_smoke_$(date +%Y%m%d_%H%M%S)}"
 DATA_ROOT="${DATA_ROOT:-$EXP_ROOT/data}"
 RUN_ROOT="${RUN_ROOT:-$EXP_ROOT/four_arm_smoke}"
-NORMAL_FRACTION="${NORMAL_FRACTION:-0.25}"
+NORMAL_FRACTION="${NORMAL_FRACTION:?set NORMAL_FRACTION explicitly: 0.0 or 0.25}"
 STUDENT_KIND="${STUDENT_KIND:-multiscale}"
 STUDENT_WIDTH="${STUDENT_WIDTH:-16}"
 DETERMINISM_MODE="${DETERMINISM_MODE:-best_effort}"
@@ -30,8 +30,20 @@ mkdir -p "$EXP_ROOT" "$RUN_ROOT"
 
 fail() { echo "FULL_SMOKE_FAIL: $*" >&2; exit 1; }
 for f in "$CANONICAL_MANIFEST" "$CONFIG"; do test -f "$f" || fail "missing $f"; done
-test -d "$NORMAL_ROOT" || fail "missing normal RGB directory: $NORMAL_ROOT"
 test -x "$PYTHON" || fail "python is not executable: $PYTHON"
+
+PROTOCOL="$($PYTHON - "$NORMAL_FRACTION" <<'PY'
+import sys
+v=float(sys.argv[1])
+if v == 0.0: print("N0")
+elif v == 0.25: print("N25")
+else: raise SystemExit("full smoke requires NORMAL_FRACTION=0.0 or 0.25")
+PY
+)"
+if [ "$PROTOCOL" = "N25" ]; then
+  test -n "$NORMAL_ROOT" || fail "N25 requires NORMAL_ROOT"
+  test -d "$NORMAL_ROOT" || fail "missing normal RGB directory: $NORMAL_ROOT"
+fi
 
 echo "== SMOKE 0/7 environment + tests =="
 "$PYTHON" - "$CONFIG" <<'PY'
@@ -47,16 +59,15 @@ PY
 "$PYTHON" -m compileall -q src scripts tests
 if [ "$RUN_UNIT_TESTS" = "1" ]; then "$PYTHON" -m pytest -q; fi
 
-echo "== SMOKE 1/7 data preparation + Gate 0 =="
+echo "== SMOKE 1/7 data preparation + Gate 0 ($PROTOCOL) =="
 if [ "$PREPARE_DATA" = "1" ]; then
-  bash "$PACKAGE_ROOT/scripts/prepare_real_data.sh" 2>&1 | tee "$EXP_ROOT/prepare_real_data.log"
+  if [ "$PROTOCOL" = "N0" ]; then
+    bash "$PACKAGE_ROOT/scripts/prepare_n0_data.sh" 2>&1 | tee "$EXP_ROOT/prepare_data.log"
+  else
+    bash "$PACKAGE_ROOT/scripts/prepare_real_data.sh" 2>&1 | tee "$EXP_ROOT/prepare_data.log"
+  fi
 fi
-N0_MODE="$($PYTHON - "$NORMAL_FRACTION" <<'PY'
-import sys
-print("1" if abs(float(sys.argv[1])) < 1e-12 else "0")
-PY
-)"
-if [ "$N0_MODE" = "1" ]; then
+if [ "$PROTOCOL" = "N0" ]; then
   TRAIN_MANIFEST="$DATA_ROOT/manifest_trainval_n0.jsonl"
   GATE0_CERTIFICATE="$DATA_ROOT/gate0_training_n0.json"
 else
@@ -106,7 +117,7 @@ print(yaml.safe_load(Path(sys.argv[1]).read_text()).get("device","cpu"))
 PY
 )}"
 SMOKE_RESULT_ROOT="$EXP_ROOT/smoke_test_results"; mkdir -p "$SMOKE_RESULT_ROOT"
-ARMS=(S0_control S1_oasis S2_aosk_topology S3_oasis_aosk_topology)
+ARMS=(S0_control S1_oasis_rc_v2 S2_aosk S3_oasis_rc_v2_aosk)
 for arm in "${ARMS[@]}"; do
   checkpoint="$RUN_ROOT/$arm/student_only.pt"
   test -f "$checkpoint" || fail "missing deployment checkpoint: $checkpoint"
@@ -118,7 +129,7 @@ echo "== SMOKE 6/7 assertions =="
 "$PYTHON" - "$SMOKE_RESULT_ROOT" <<'PY'
 import json,math,sys
 from pathlib import Path
-root=Path(sys.argv[1]); arms=["S0_control","S1_oasis","S2_aosk_topology","S3_oasis_aosk_topology"]
+root=Path(sys.argv[1]); arms=["S0_control","S1_oasis_rc_v2","S2_aosk","S3_oasis_rc_v2_aosk"]
 print(f"{'ARM':30s} {'DICE/F1':>10s} {'IOU':>10s} {'THRESH':>10s}")
 for arm in arms:
     r=json.loads((root/f"{arm}.json").read_text())
@@ -130,7 +141,8 @@ PY
 
 echo "== SMOKE 7/7 complete =="
 echo "FULL_SMOKE_PASS"
-echo "AOSK_VARIANT=centerline-cldice-v1"
+echo "TRAINING_VARIANT=$PROTOCOL"
+echo "AOSK_VARIANT=oriented-consistency-v1"
 echo "SMOKE_TEST_SPLIT=smoke_test"
 echo "CANONICAL_TEST_OPENED=NO"
 echo "TEST_FIREWALL=CLOSED"
