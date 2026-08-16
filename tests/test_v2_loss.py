@@ -1,7 +1,10 @@
 import pytest
 torch=pytest.importorskip("torch")
 from oasis_rc_v2.critic import OASISRCv2Critic
-from oasis_rc_v2.losses import oasis_rc_student_loss_v2
+from oasis_rc_v2.losses import (
+    oasis_rc_student_loss_v2,
+    relational_ranking_loss,
+)
 
 
 def _relation(mismatch_logit):
@@ -17,6 +20,30 @@ def test_ranking_prefers_prediction_between_gt_and_corruption():
  bad,_=oasis_rc_student_loss_v2(_relation(-6.0),gt,corrupt,student_mask,target,pair_weight=0.0)
  ordered,_=oasis_rc_student_loss_v2(_relation(0.0),gt,corrupt,student_mask,target,pair_weight=0.0)
  assert ordered < bad
+
+@pytest.mark.parametrize(
+    ("e_pred_value", "expected_sign"),
+    [
+        (0.05, -1),  # descent increases prediction energy
+        (0.50, 0),   # balanced between GT and corruption
+        (0.95, 1),   # descent decreases prediction energy
+    ],
+)
+def test_relational_ranking_gradient_direction(e_pred_value, expected_sign):
+    e_pred = torch.tensor([e_pred_value], requires_grad=True)
+    e_gt = torch.tensor([0.0])
+    e_corrupted = torch.tensor([1.0])
+    loss, terms = relational_ranking_loss(
+        e_pred, e_gt, e_corrupted, margin=0.10
+    )
+    (gradient,) = torch.autograd.grad(loss, e_pred)
+    assert torch.isfinite(loss)
+    assert {"rank_gt", "rank_corrupted"} == set(terms)
+    if expected_sign == 0:
+        assert abs(float(gradient)) < 1e-7
+    else:
+        assert int(torch.sign(gradient).item()) == expected_sign
+
 
 def test_v2_corrupted_ranking_has_student_gradient_only():
  c=OASISRCv2Critic(width=4)

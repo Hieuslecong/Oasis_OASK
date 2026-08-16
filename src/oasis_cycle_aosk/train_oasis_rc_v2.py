@@ -769,7 +769,7 @@ def train_student(args, cfg, device, out, determinism_mode, critic=None, aosk=Fa
         total_values, seg_values = [], []
         rc_values, aosk_values = [], []
         weighted_rc_values, weighted_aosk_values = [], []
-        energy_pred, energy_gt, energy_corrupt = [], [], []
+        rc_diagnostic_values = {}
         rc_ramp = 0.0
 
         for x, y, is_normal in loader:
@@ -825,9 +825,8 @@ def train_student(args, cfg, device, out, determinism_mode, critic=None, aosk=Fa
                 weighted_rc_values.append(
                     float(args.lambda_oasis * rc_ramp * rc_float)
                 )
-                energy_pred.append(float(rc_extras["e_pred"]))
-                energy_gt.append(float(rc_extras["e_gt"]))
-                energy_corrupt.append(float(rc_extras["e_corrupted"]))
+                for name, value in rc_extras.items():
+                    rc_diagnostic_values.setdefault(name, []).append(float(value))
             if aosk_value is not None:
                 aosk_float = float(aosk_value.detach())
                 aosk_values.append(aosk_float)
@@ -844,9 +843,10 @@ def train_student(args, cfg, device, out, determinism_mode, critic=None, aosk=Fa
             "loss_aosk_weighted": (
                 _mean(weighted_aosk_values) if weighted_aosk_values else None
             ),
-            "e_pred": _mean(energy_pred) if energy_pred else None,
-            "e_gt": _mean(energy_gt) if energy_gt else None,
-            "e_corrupted": _mean(energy_corrupt) if energy_corrupt else None,
+            "rc_diagnostics": {
+                name: _mean(values)
+                for name, values in sorted(rc_diagnostic_values.items())
+            } if rc_diagnostic_values else None,
             "rc_ramp": rc_ramp,
             "val": validation_epoch,
         }

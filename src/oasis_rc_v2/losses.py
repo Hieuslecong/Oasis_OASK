@@ -111,6 +111,31 @@ def relation_energy(out, pair_weight=0.25):
     return mismatch + float(pair_weight) * invalid_pair
 
 
+def relational_ranking_loss(
+    e_pred,
+    e_gt,
+    e_corrupted,
+    margin=0.10,
+    corrupted_rank_weight=1.0,
+):
+    """Rank prediction energy strictly between GT and corrupted energies.
+
+    Lower energy denotes a better RGB-mask relation. Gradient descent therefore
+    increases an overly-low prediction energy and decreases an overly-high one.
+    """
+    e_gt = e_gt.detach()
+    e_corrupted = e_corrupted.detach()
+    rank_gt = F.softplus(e_gt - e_pred + float(margin)).mean()
+    rank_corrupted = F.softplus(
+        e_pred - e_corrupted + float(margin)
+    ).mean()
+    total = rank_gt + float(corrupted_rank_weight) * rank_corrupted
+    return total, {
+        "rank_gt": rank_gt,
+        "rank_corrupted": rank_corrupted,
+    }
+
+
 def oasis_rc_student_loss_v2(
     pred_out,
     gt_out,
@@ -124,21 +149,36 @@ def oasis_rc_student_loss_v2(
     e_pred = relation_energy(pred_out, pair_weight)
     e_gt = relation_energy(gt_out, pair_weight).detach()
     e_corrupted = relation_energy(corrupted_out, pair_weight).detach()
-    # Lower energy means a more valid RGB-mask relation. Enforce
-    # E(GT) + margin < E(prediction) < E(corruption) - margin.
-    rank_gt = F.softplus(e_gt - e_pred + margin).mean()
-    rank_corrupted = F.softplus(e_pred - e_corrupted + margin).mean()
+    ranking, ranking_terms = relational_ranking_loss(
+        e_pred,
+        e_gt,
+        e_corrupted,
+        margin=margin,
+        corrupted_rank_weight=corrupted_rank_weight,
+    )
+    rank_gt = ranking_terms["rank_gt"]
+    rank_corrupted = ranking_terms["rank_corrupted"]
     q_pred = pred_out["mismatch"].sigmoid()
     fp = (((1.0 - target) * student_mask * q_pred).sum() /
           ((1.0 - target).sum().clamp_min(1.0)))
-    total = rank_gt + float(corrupted_rank_weight) * rank_corrupted + fp
+    total = ranking + fp
+    energy_gap = e_corrupted.detach() - e_gt
+    margin_feasibility_gap = energy_gap - 2.0 * float(margin)
+    ordered = (
+        (e_gt + float(margin) < e_pred.detach())
+        & (e_pred.detach() < e_corrupted.detach() - float(margin))
+    )
     return total, {
         "rank_gt": rank_gt.detach(),
         "rank_corrupted": rank_corrupted.detach(),
         "fp": fp.detach(),
+        "background_fp_penalty": fp.detach(),
         "e_pred": e_pred.detach().mean(),
         "e_gt": e_gt.detach().mean(),
         "e_corrupted": e_corrupted.detach().mean(),
         "delta_pred_gt": (e_pred.detach() - e_gt).mean(),
         "delta_pred_corrupted": (e_pred.detach() - e_corrupted).mean(),
+        "energy_gap": energy_gap.mean(),
+        "margin_feasibility_gap": margin_feasibility_gap.mean(),
+        "ordered_fraction": ordered.float().mean(),
     }
