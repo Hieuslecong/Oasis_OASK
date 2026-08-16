@@ -16,7 +16,10 @@ from oasis_rc_v2.checkpoint import (
 )
 from oasis_rc_v2.corruptions import CORRUPTION_NAMES, make_corrupted_mask
 from oasis_rc_v2.critic import OASISRCv2Critic
-from oasis_rc_v2.losses import oasis_rc_critic_loss
+from oasis_rc_v2.losses import (
+    balanced_semantic_cross_entropy,
+    oasis_rc_critic_loss,
+)
 from oasis_rc_v2.protocol import dataset_content_sha256, verify_gate0_certificate
 
 
@@ -65,6 +68,24 @@ def test_donor_is_nonself_and_crack_positive():
     assert meta[1]["donor_index"] in {0}
     assert meta[0]["donor_index"] != 0
     assert meta[1]["donor_index"] != 1
+    assert meta[2]["kind"] == "C8_crack_on_normal"
+    assert meta[2]["donor_index"] in {0, 1}
+
+
+def test_semantic_loss_balances_active_classes_not_pixel_frequency():
+    logits = torch.tensor(
+        [[[[2.0, 2.0]], [[0.0, 0.0]], [[-1.0, -1.0]]]],
+        requires_grad=True,
+    )
+    target = torch.tensor([[[0, 1]]])
+    base = balanced_semantic_cross_entropy(logits, target)
+    repeated_logits = torch.cat([logits[:, :, :1, :1].expand(-1, -1, 1, 20), logits[:, :, :1, 1:]], dim=3)
+    repeated_target = torch.cat(
+        [torch.zeros(1, 1, 20, dtype=torch.long), torch.ones(1, 1, 1, dtype=torch.long)],
+        dim=2,
+    )
+    repeated = balanced_semantic_cross_entropy(repeated_logits, repeated_target)
+    assert torch.allclose(base, repeated)
 
 
 def test_critic_loss_contains_valid_crack_dice():
@@ -115,6 +136,8 @@ def test_gate0_certificate_binds_dataset_bytes(tmp_path):
         "empty_target_status": "verified_no_crack",
     }
     manifest.write_text(json.dumps(row) + "\n")
+    full = tmp_path / "gate0_full.json"
+    full.write_text(json.dumps({"status": "PASS", "scope": "full_benchmark"}))
     cert = tmp_path / "gate0.json"
     cert.write_text(
         json.dumps(
@@ -125,13 +148,22 @@ def test_gate0_certificate_binds_dataset_bytes(tmp_path):
                 "dataset_content_sha256": dataset_content_sha256(manifest),
                 "resize_size": 256,
                 "normal_policy": "none",
+                "parent_full_gate0_certificate_sha256": hashlib.sha256(
+                    full.read_bytes()
+                ).hexdigest(),
             }
         )
     )
-    verify_gate0_certificate(cert, manifest, 256, "none")
+    verify_gate0_certificate(cert, manifest, 256, "none", full)
+    other_full = tmp_path / "other_full.json"
+    other_full.write_text(
+        json.dumps({"status": "PASS", "scope": "full_benchmark", "other": True})
+    )
+    with pytest.raises(ValueError, match="parent full Gate 0 mismatch"):
+        verify_gate0_certificate(cert, manifest, 256, "none", other_full)
     Image.new("RGB", (8, 8), (11, 20, 30)).save(image)
     with pytest.raises(ValueError, match="dataset-content SHA256"):
-        verify_gate0_certificate(cert, manifest, 256, "none")
+        verify_gate0_certificate(cert, manifest, 256, "none", full)
 
 
 def test_student_checkpoint_rejects_legacy_and_wrong_implementation():
@@ -143,8 +175,24 @@ def test_student_checkpoint_rejects_legacy_and_wrong_implementation():
         "method_version": METHOD_VERSION,
         "implementation_version": IMPLEMENTATION_VERSION,
         "student": {},
+        "student_kind": "multiscale",
+        "student_width": 16,
+        "seed": 1337,
+        "mode": "control",
+        "effective_config": {
+            "image_size": 256,
+            "student_kind": "multiscale",
+            "student_width": 16,
+            "seed": 1337,
+        },
+        "threshold_validation": 0.5,
         "manifest_file_sha256": "a" * 64,
         "dataset_content_sha256": "b" * 64,
+        "training_view_dataset_sha256": "b" * 64,
+        "gate0_certificate_sha256": "c" * 64,
+        "full_gate0_certificate_sha256": "d" * 64,
+        "student_init_sha256": "e" * 64,
+        "inference_contract": "RGB -> crack logits only",
     }
     validate_student_checkpoint(good)
     bad = dict(good)

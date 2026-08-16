@@ -50,7 +50,8 @@ echo "== N0 DATA 5/5 crack-only training-view Gate 0 =="
   --normal-policy none \
   --required-splits train val \
   --certificate-out "$CERT_N0" \
-  --certificate-scope training_view
+  --certificate-scope training_view \
+  --parent-full-certificate "$FULL_CERT_N0"
 
 printf 'N0_DATA_READY\nTRAIN_N0=%s\nCERT_N0=%s\nFULL_CERT_N0=%s\n' \
   "$TRAIN_N0" "$CERT_N0" "$FULL_CERT_N0"

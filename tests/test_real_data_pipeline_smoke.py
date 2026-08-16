@@ -117,6 +117,8 @@ def test_real_file_pipeline_reaches_optimizer_and_checkpoint(tmp_path):
             cert32,
             "--certificate-scope",
             "training_view",
+            "--parent-full-certificate",
+            derived / "gate0_full.json",
         ]
     )
 
@@ -153,6 +155,8 @@ def test_real_file_pipeline_reaches_optimizer_and_checkpoint(tmp_path):
             train_manifest,
             "--gate0-certificate",
             cert32,
+            "--full-gate0-certificate",
+            derived / "gate0_full.json",
             "--out",
             critic_out,
             "--mode",
@@ -181,6 +185,8 @@ def test_real_file_pipeline_reaches_optimizer_and_checkpoint(tmp_path):
             train_manifest,
             "--gate0-certificate",
             cert32,
+            "--full-gate0-certificate",
+            derived / "gate0_full.json",
             "--out",
             student_out,
             "--mode",

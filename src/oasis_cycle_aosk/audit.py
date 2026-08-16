@@ -34,6 +34,22 @@ def _decoded_rgb_sha256(path):
     return _array_sha256(np.asarray(Image.open(path).convert("RGB"), dtype=np.uint8), "rgb")
 
 
+def _perceptual_features(path):
+    """Return dHash plus RGB mean to avoid grayscale-uniform false matches."""
+    rgb = Image.open(path).convert("RGB")
+    image = rgb.convert("L").resize((9, 8), Image.Resampling.LANCZOS)
+    values = np.asarray(image, dtype=np.int16)
+    bits = (values[:, 1:] > values[:, :-1]).reshape(-1)
+    result = 0
+    for bit in bits:
+        result = (result << 1) | int(bit)
+    mean_rgb = tuple(
+        float(value)
+        for value in np.asarray(rgb.resize((1, 1), Image.Resampling.BOX))[0, 0]
+    )
+    return result, mean_rgb
+
+
 def _decoded_binary_mask(path):
     return (np.asarray(Image.open(path).convert("L"), dtype=np.uint8) > 127).astype(np.uint8)
 
@@ -99,6 +115,7 @@ def audit(
     raw_mask_rows = defaultdict(list)
     decoded_mask_rows = defaultdict(list)
     pair_rows = defaultdict(list)
+    perceptual_rows = []
     if normal_policy is None:
         normal_policy = "train" if require_normal else "none"
     if normal_policy not in {"none", "train", "train_and_aux_val"}:
@@ -136,6 +153,8 @@ def audit(
             item = (i, split, r["is_normal"], image_key)
             raw_rgb_rows[raw_rgb].append(item)
             decoded_rgb_rows[decoded_rgb].append(item)
+            dhash, mean_rgb = _perceptual_features(image_path)
+            perceptual_rows.append((i, split, image_key, dhash, mean_rgb))
         except Exception as exc:
             errors.append(f"row {i}: cannot decode/hash image: {exc}")
             continue
@@ -240,6 +259,39 @@ def audit(
     check_mask("decoded-binary-mask", decoded_mask_rows)
     check_pair(pair_rows)
 
+    # Five exact bands guarantee that every pair with Hamming distance <= 4
+    # shares at least one band, avoiding an O(n^2) scan on large datasets.
+    band_ranges = ((0, 13), (13, 26), (26, 39), (39, 52), (52, 64))
+    buckets = defaultdict(list)
+    for item in perceptual_rows:
+        value = item[3]
+        for band, (start, stop) in enumerate(band_ranges):
+            width = stop - start
+            key = (value >> (64 - stop)) & ((1 << width) - 1)
+            buckets[(band, key)].append(item)
+    seen_pairs = set()
+    for candidates in buckets.values():
+        for left_index in range(len(candidates)):
+            left = candidates[left_index]
+            for right in candidates[left_index + 1 :]:
+                pair = tuple(sorted((left[0], right[0])))
+                if pair in seen_pairs:
+                    continue
+                seen_pairs.add(pair)
+                if left[1] == right[1] or left[2] == right[2]:
+                    continue
+                distance = (left[3] ^ right[3]).bit_count()
+                color_distance = sum(
+                    (a - b) ** 2 for a, b in zip(left[4], right[4])
+                ) ** 0.5
+                if distance <= 4 and color_distance <= 12.0:
+                    errors.append(
+                        "perceptual-rgb near-duplicate across splits: "
+                        f"rows={pair} splits={sorted((left[1], right[1]))} "
+                        f"dhash_distance={distance} mean_rgb_distance={color_distance:.3f} "
+                        f"paths={[left[2], right[2]]}"
+                    )
+
     for split in required_splits:
         if not any(r.get("split") == split for r in rows):
             errors.append(f"missing required split: {split}")
@@ -273,6 +325,11 @@ def main():
         choices=("full_benchmark", "training_view"),
         default=None,
     )
+    p.add_argument(
+        "--parent-full-certificate",
+        default=None,
+        help="required provenance parent when issuing a training_view certificate",
+    )
     a = p.parse_args()
     errors = audit(
         a.manifest,
@@ -298,6 +355,21 @@ def main():
             "\n".join(json.dumps(r, ensure_ascii=False, sort_keys=True) for r in inventory)
             + ("\n" if inventory else "")
         )
+        parent_full_sha = None
+        if a.certificate_scope == "training_view":
+            if not a.parent_full_certificate:
+                raise SystemExit(
+                    "--parent-full-certificate is required for training_view certificates"
+                )
+            parent_path = Path(a.parent_full_certificate)
+            parent = json.loads(parent_path.read_text())
+            if parent.get("status") != "PASS" or parent.get("scope") != "full_benchmark":
+                raise SystemExit("parent certificate must be PASS/full_benchmark")
+            parent_full_sha = _sha256_file(parent_path)
+        elif a.parent_full_certificate:
+            raise SystemExit(
+                "--parent-full-certificate is only valid for training_view certificates"
+            )
         cert = {
             "status": "PASS",
             "scope": a.certificate_scope,
@@ -312,6 +384,8 @@ def main():
                 a.required_splits or ("train", "val", a.test_split)
             ),
             "gate0_schema": 2,
+            "parent_full_gate0_certificate_sha256": parent_full_sha,
+            "perceptual_duplicate_contract": "dhash64<=4-and-mean-rgb-distance<=12-cross-split-v1",
         }
         out.write_text(json.dumps(cert, indent=2))
         print(json.dumps(cert, indent=2))

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Measure auxiliary-gradient strength/alignment on the certified train view only."""
-import argparse, json, math
+import argparse, inspect, json, math
 from pathlib import Path
 import numpy as np
 import torch
@@ -16,6 +16,7 @@ from oasis_cycle_aosk.train_oasis_rc_v2 import (
 )
 from oasis_rc_v2.checkpoint import validate_critic_checkpoint
 from oasis_rc_v2.critic import OASISRCv2Critic
+import oasis_rc_v2.losses as rc_losses
 from oasis_rc_v2.losses import segmentation_loss, oasis_rc_student_loss_v2
 from oasis_rc_v2.protocol import verify_gate0_certificate
 
@@ -25,11 +26,17 @@ def _load_student(model, path):
     model.load_state_dict(saved.get("student", saved) if isinstance(saved, dict) else saved)
 
 
-def _load_critic(path, manifest, cfg, normal_fraction, normal_critic_weight, device):
+def _load_critic(
+    path, manifest, cfg, normal_fraction, normal_critic_weight,
+    full_gate0_certificate, device,
+):
     if not path:
         return None
     saved = torch.load(path, map_location=device, weights_only=False)
-    validate_critic_checkpoint(saved, manifest, cfg, normal_fraction, normal_critic_weight)
+    validate_critic_checkpoint(
+        saved, manifest, cfg, normal_fraction, normal_critic_weight,
+        full_gate0_certificate=full_gate0_certificate,
+    )
     critic = OASISRCv2Critic(width=int(saved["width"])).to(device)
     critic.load_state_dict(saved["critic"])
     critic.eval()
@@ -62,7 +69,20 @@ def _scale(grads, weight):
 
 def _summary(values):
     vals = [v for v in values if v is not None and np.isfinite(v)]
-    return {"mean": float(np.mean(vals)) if vals else None, "std": float(np.std(vals)) if vals else None}
+    if not vals:
+        return {
+            "mean": None, "std": None, "median": None,
+            "q05": None, "q25": None, "q75": None, "q95": None,
+        }
+    return {
+        "mean": float(np.mean(vals)),
+        "std": float(np.std(vals)),
+        "median": float(np.median(vals)),
+        "q05": float(np.quantile(vals, 0.05)),
+        "q25": float(np.quantile(vals, 0.25)),
+        "q75": float(np.quantile(vals, 0.75)),
+        "q95": float(np.quantile(vals, 0.95)),
+    }
 
 
 def main():
@@ -70,6 +90,7 @@ def main():
     p.add_argument("--config", required=True)
     p.add_argument("--manifest", required=True)
     p.add_argument("--gate0-certificate", required=True)
+    p.add_argument("--full-gate0-certificate", required=True)
     p.add_argument("--student-init-checkpoint", required=True)
     p.add_argument("--critic-checkpoint", default=None)
     p.add_argument("--student-kind", default="multiscale")
@@ -92,6 +113,7 @@ def main():
         args.manifest,
         int(cfg["image_size"]),
         normal_policy,
+        args.full_gate0_certificate,
     )
     seed = int(cfg["seed"])
     seed_all(seed)
@@ -105,6 +127,7 @@ def main():
         cfg,
         args.normal_fraction,
         args.normal_critic_weight,
+        args.full_gate0_certificate,
         device,
     )
     corruption_gen = make_generator(device, seed + 20001)
@@ -158,15 +181,26 @@ def main():
         }
         if rc is not None:
             g_rc = _grads(rc, params, False)
+            rc_weight = args.lambda_oasis * args.rc_ramp
+            g_rc_weighted = _scale(g_rc, rc_weight)
+            rc_raw_norm = _norm(g_rc)
+            rc_weighted_norm = _norm(g_rc_weighted)
+            active_parameters = sum(
+                int(torch.count_nonzero(g).item() > 0) for g in g_rc
+            )
             row.update(
                 {
                     "loss_rc": float(rc.detach()),
-                    "ratio_rc_to_seg": _norm(_scale(g_rc, args.lambda_oasis * args.rc_ramp)) / max(seg_norm, 1e-30),
+                    "grad_rc_raw": rc_raw_norm,
+                    "grad_rc_weighted": rc_weighted_norm,
+                    "ratio_rc_raw_to_seg": rc_raw_norm / max(seg_norm, 1e-30),
+                    "ratio_rc_weighted_to_seg": rc_weighted_norm / max(seg_norm, 1e-30),
+                    "lambda_oasis": float(args.lambda_oasis),
+                    "rc_ramp": float(args.rc_ramp),
                     "cosine_seg_rc": _cosine(g_seg, g_rc),
                     "cosine_rc_aosk": _cosine(g_rc, g_aosk),
-                    "e_pred": float(ex["e_pred"]),
-                    "e_gt": float(ex["e_gt"]),
-                    "e_corrupted": float(ex["e_corrupted"]),
+                    "rc_active_parameter_fraction": active_parameters / max(len(g_rc), 1),
+                    **{name: float(value) for name, value in ex.items()},
                 }
             )
         rows.append(row)
@@ -174,6 +208,15 @@ def main():
         raise RuntimeError("no diagnostic batches were processed")
     names = sorted({k for row in rows for k in row if k != "batch"})
     result = {
+        "provenance": {
+            "losses_module_file": str(Path(rc_losses.__file__).resolve()),
+            "student_loss_source": inspect.getsource(
+                rc_losses.oasis_rc_student_loss_v2
+            ),
+            "ranking_loss_source": inspect.getsource(
+                rc_losses.relational_ranking_loss
+            ),
+        },
         "summary": {
             "batches": len(rows),
             "seed": seed,

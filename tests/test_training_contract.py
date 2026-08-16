@@ -176,6 +176,8 @@ def test_student_init_seed_mismatch_is_rejected(tmp_path):
 def test_critic_provenance_and_schema_fail_closed(tmp_path):
     manifest = tmp_path / "manifest.jsonl"
     manifest.write_text("canonical-bytes\n")
+    full_certificate = tmp_path / "full_gate0.json"
+    full_certificate.write_text('{"status":"PASS","scope":"full_benchmark"}')
     dataset_sha = "d" * 64
     args = SimpleNamespace(
         manifest=str(manifest),
@@ -186,6 +188,7 @@ def test_critic_provenance_and_schema_fail_closed(tmp_path):
         pair_weight=0.25,
         rgb_mask_weight=1.0,
         _dataset_content_sha256=dataset_sha,
+        full_gate0_certificate=str(full_certificate),
     )
     cfg = {"seed": 1337, "image_size": 256}
     training_hparams = {
@@ -206,6 +209,8 @@ def test_critic_provenance_and_schema_fail_closed(tmp_path):
         "implementation_version": IMPLEMENTATION_VERSION,
         "critic": {},
         "width": 8,
+        "seed": 1337,
+        "full_gate0_certificate_sha256": sha256_file(full_certificate),
         "config": cfg,
         "manifest_file_sha256": sha256_file(manifest),
         "dataset_content_sha256": dataset_sha,

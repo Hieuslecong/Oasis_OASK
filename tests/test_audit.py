@@ -130,3 +130,18 @@ def test_certified_empty_across_splits_no_reuse_error(tmp_path):
     mfp.write_text("\n".join(json.dumps(r) for r in rows))
     errors = audit(mfp, resize_size=256)
     assert errors == []
+
+
+def test_audit_detects_perceptual_near_duplicate_across_splits(tmp_path):
+    rows = []
+    for index, (split, value) in enumerate((("train", 80), ("val", 82))):
+        image = tmp_path / f"near_{index}.png"
+        _rgb(image, size=(16, 16), value=value)
+        rows.append({
+            "image": str(image), "mask": None, "split": split,
+            "source_id": f"s{index}", "lineage_id": f"l{index}", "is_normal": True,
+        })
+    manifest = tmp_path / "near.jsonl"
+    manifest.write_text("\n".join(json.dumps(row) for row in rows))
+    errors = audit(manifest, required_splits=("train", "val"))
+    assert any("perceptual-rgb near-duplicate" in error for error in errors)

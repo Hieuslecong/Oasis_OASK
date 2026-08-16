@@ -32,11 +32,13 @@ PY
 if [ "$TRAINING_VARIANT" = "N0" ]; then
   TRAIN_MANIFEST="$DATA_ROOT/manifest_trainval_n0.jsonl"
   TRAIN_CERT="$DATA_ROOT/gate0_training_n0.json"
+  FULL_CERT="$DATA_ROOT/gate0_full_n0.json"
 else
   test -n "$NORMAL_ROOT" || { echo "N25 requires NORMAL_ROOT" >&2; exit 2; }
   test -d "$NORMAL_ROOT" || { echo "N25 NORMAL_ROOT not found: $NORMAL_ROOT" >&2; exit 2; }
   TRAIN_MANIFEST="$DATA_ROOT/manifest_trainval_with_normal.jsonl"
   TRAIN_CERT="$DATA_ROOT/gate0_training.json"
+  FULL_CERT="$DATA_ROOT/gate0_full.json"
 fi
 
 INIT="$EXP_ROOT/init/student_init_seed${SEED}.pt"
@@ -62,9 +64,20 @@ if [ "${PREPARE_DATA:-1}" = "1" ]; then
   fi
 fi
 
-for f in "$TRAIN_MANIFEST" "$TRAIN_CERT" "$CONFIG"; do
+for f in "$TRAIN_MANIFEST" "$TRAIN_CERT" "$FULL_CERT" "$CONFIG"; do
   test -f "$f" || { echo "MISSING: $f" >&2; exit 2; }
 done
+
+mkdir -p "$EXP_ROOT/preflight"
+"$PYTHON" "$PACKAGE_ROOT/scripts/preflight_real_host.py" \
+  --config "$CONFIG" \
+  --manifest "$TRAIN_MANIFEST" \
+  --gate0-certificate "$TRAIN_CERT" \
+  --full-gate0-certificate "$FULL_CERT" \
+  --normal-fraction "$NORMAL_FRACTION" \
+  --student-kind "${STUDENT_KIND:-multiscale}" \
+  --student-width "${STUDENT_WIDTH:-16}" \
+  --out "$EXP_ROOT/preflight/seed${SEED}_${TRAINING_VARIANT}.json"
 
 "$PYTHON" - "$CONFIG" "$DETERMINISM_MODE" "$NORMAL_FRACTION" <<'PY'
 import json, os, sys, yaml, torch
@@ -102,6 +115,7 @@ if [ ! -f "$CRITIC" ]; then
     --config "$CONFIG" \
     --manifest "$TRAIN_MANIFEST" \
     --gate0-certificate "$TRAIN_CERT" \
+    --full-gate0-certificate "$FULL_CERT" \
     --out "$CRITIC_DIR" \
     --mode critic \
     --normal-fraction "$NORMAL_FRACTION" \
@@ -127,6 +141,7 @@ if [ "${RUN_ARMS:-1}" = "1" ]; then
   CONFIG="$CONFIG" \
   MANIFEST="$TRAIN_MANIFEST" \
   GATE0_CERTIFICATE="$TRAIN_CERT" \
+  FULL_GATE0_CERTIFICATE="$FULL_CERT" \
   STUDENT_INIT="$INIT" \
   CRITIC="$CRITIC" \
   NORMAL_FRACTION="$NORMAL_FRACTION" \

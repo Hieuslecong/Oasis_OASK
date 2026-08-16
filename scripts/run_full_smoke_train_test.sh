@@ -70,11 +70,13 @@ fi
 if [ "$PROTOCOL" = "N0" ]; then
   TRAIN_MANIFEST="$DATA_ROOT/manifest_trainval_n0.jsonl"
   GATE0_CERTIFICATE="$DATA_ROOT/gate0_training_n0.json"
+  FULL_GATE0_CERTIFICATE="$DATA_ROOT/gate0_full_n0.json"
 else
   TRAIN_MANIFEST="$DATA_ROOT/manifest_trainval_with_normal.jsonl"
   GATE0_CERTIFICATE="$DATA_ROOT/gate0_training.json"
+  FULL_GATE0_CERTIFICATE="$DATA_ROOT/gate0_full.json"
 fi
-for f in "$TRAIN_MANIFEST" "$GATE0_CERTIFICATE"; do test -f "$f" || fail "missing $f"; done
+for f in "$TRAIN_MANIFEST" "$GATE0_CERTIFICATE" "$FULL_GATE0_CERTIFICATE"; do test -f "$f" || fail "missing $f"; done
 
 echo "== SMOKE 2/7 shared student init =="
 STUDENT_INIT="$EXP_ROOT/init/student_init_seed${SEED}.pt"
@@ -87,7 +89,7 @@ CONFIG="$CONFIG" NORMAL_FRACTION="$NORMAL_FRACTION" RUN_ROOT="$RUN_ROOT" PYTHON=
 DETERMINISM_MODE="$DETERMINISM_MODE" SMOKE_CRITIC_EPOCHS="$SMOKE_CRITIC_EPOCHS" \
 SMOKE_EPOCHS="$SMOKE_EPOCHS" SMOKE_WARMUP="$SMOKE_WARMUP" \
 SMOKE_RAMP_EPOCHS="$SMOKE_RAMP_EPOCHS" \
-bash "$PACKAGE_ROOT/scripts/run_smoke.sh" "$TRAIN_MANIFEST" "$GATE0_CERTIFICATE" "$STUDENT_INIT" "$STUDENT_KIND" \
+bash "$PACKAGE_ROOT/scripts/run_smoke.sh" "$TRAIN_MANIFEST" "$GATE0_CERTIFICATE" "$STUDENT_INIT" "$STUDENT_KIND" "$FULL_GATE0_CERTIFICATE" \
   2>&1 | tee "$EXP_ROOT/four_arm_training.log"
 
 echo "== SMOKE 4/7 build non-canonical smoke_test =="

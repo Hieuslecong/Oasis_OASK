@@ -12,5 +12,5 @@ for STUDENT_KIND in mobilenetv3 dsunet fastscnn bisenet; do
   INIT="$ROOT/student_init_seed1337.pt"
   "$PYTHON" "$PACKAGE_ROOT/scripts/create_student_init.py" --seed 1337 --student-kind "$STUDENT_KIND" --student-width 16 --out "$INIT"
   RUN_ROOT="$ROOT" PYTHON="$PYTHON" NORMAL_FRACTION="$NORMAL_FRACTION" \
-    "$PACKAGE_ROOT/scripts/run_smoke.sh" "$MANIFEST" "$GATE0_CERTIFICATE" "$INIT" "$STUDENT_KIND"
+    "$PACKAGE_ROOT/scripts/run_smoke.sh" "$MANIFEST" "$GATE0_CERTIFICATE" "$INIT" "$STUDENT_KIND" "${FULL_GATE0_CERTIFICATE:?set FULL_GATE0_CERTIFICATE}"
 done

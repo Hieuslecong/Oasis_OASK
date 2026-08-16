@@ -84,7 +84,13 @@ def _make_full_manifest(tmp_path):
 
 def test_final_test_authorization_binds_checkpoint_manifest_data_and_threshold(tmp_path):
     checkpoint = tmp_path / "student.pt"
-    checkpoint.write_bytes(b"checkpoint-bytes")
+    torch.save(
+        {
+            "training_view_dataset_sha256": "1" * 64,
+            "full_gate0_certificate_sha256": "2" * 64,
+        },
+        checkpoint,
+    )
     manifest = _make_full_manifest(tmp_path)
     auth = tmp_path / "opened.json"
     payload = {
@@ -92,6 +98,8 @@ def test_final_test_authorization_binds_checkpoint_manifest_data_and_threshold(t
         "checkpoint_sha256": sha256_file(checkpoint),
         "manifest_sha256": sha256_file(manifest),
         "dataset_content_sha256": dataset_content_sha256(manifest),
+        "training_view_dataset_sha256": "1" * 64,
+        "full_gate0_certificate_sha256": "2" * 64,
         "threshold": 0.42,
     }
     auth.write_text(json.dumps(payload))
@@ -130,6 +138,7 @@ def _good_critic_metrics():
         "normal_supervision_expected": True,
         "valid_crack_predictions": 20,
         "corruption_invalid_recall": {name: 0.80 for name in names},
+        "corruption_samples": {name: 16 for name in names},
     }
 
 

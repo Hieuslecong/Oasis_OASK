@@ -29,6 +29,25 @@ def valid_crack_dice_loss(crack_logit, semantic_target, pair_valid, eps=1e-6):
     return dice[sample_active].mean()
 
 
+def balanced_semantic_cross_entropy(logits, target, class_weight=None):
+    """Average per-class pixel means so background cannot dominate the critic."""
+    pixel_loss = F.cross_entropy(logits, target.long(), reduction="none")
+    means, weights = [], []
+    for class_index in range(logits.shape[1]):
+        active = target == class_index
+        if active.any():
+            means.append(pixel_loss[active].mean())
+            weights.append(
+                logits.new_tensor(1.0)
+                if class_weight is None
+                else class_weight[class_index].to(logits)
+            )
+    if not means:
+        return logits.sum() * 0.0
+    stacked_weights = torch.stack(weights)
+    return (torch.stack(means) * stacked_weights).sum() / stacked_weights.sum()
+
+
 def oasis_rc_critic_loss(
     out,
     semantic_target,
@@ -60,9 +79,9 @@ def oasis_rc_critic_loss(
             "rgb_shuffle_pair_only": out["pair"].new_tensor(1.0),
         }
 
-    if class_weight is None:
-        class_weight = out["semantic"].new_tensor([1.0, 20.0, 12.0])
-    semantic = F.cross_entropy(out["semantic"], semantic_target.long(), weight=class_weight)
+    semantic = balanced_semantic_cross_entropy(
+        out["semantic"], semantic_target, class_weight=class_weight
+    )
     crack_dice = valid_crack_dice_loss(out["crack"], semantic_target, pair_valid)
     pos = mismatch_target.sum().clamp_min(1.0)
     neg = mismatch_target.numel() - pos
@@ -92,6 +111,31 @@ def relation_energy(out, pair_weight=0.25):
     return mismatch + float(pair_weight) * invalid_pair
 
 
+def relational_ranking_loss(
+    e_pred,
+    e_gt,
+    e_corrupted,
+    margin=0.10,
+    corrupted_rank_weight=1.0,
+):
+    """Rank prediction energy strictly between GT and corrupted energies.
+
+    Lower energy denotes a better RGB-mask relation. Gradient descent therefore
+    increases an overly-low prediction energy and decreases an overly-high one.
+    """
+    e_gt = e_gt.detach()
+    e_corrupted = e_corrupted.detach()
+    rank_gt = F.softplus(e_gt - e_pred + float(margin)).mean()
+    rank_corrupted = F.softplus(
+        e_pred - e_corrupted + float(margin)
+    ).mean()
+    total = rank_gt + float(corrupted_rank_weight) * rank_corrupted
+    return total, {
+        "rank_gt": rank_gt,
+        "rank_corrupted": rank_corrupted,
+    }
+
+
 def oasis_rc_student_loss_v2(
     pred_out,
     gt_out,
@@ -105,19 +149,36 @@ def oasis_rc_student_loss_v2(
     e_pred = relation_energy(pred_out, pair_weight)
     e_gt = relation_energy(gt_out, pair_weight).detach()
     e_corrupted = relation_energy(corrupted_out, pair_weight).detach()
-    rank_gt = F.softplus(e_pred - e_gt + margin).mean()
-    rank_corrupted = F.softplus(e_pred - e_corrupted + margin).mean()
+    ranking, ranking_terms = relational_ranking_loss(
+        e_pred,
+        e_gt,
+        e_corrupted,
+        margin=margin,
+        corrupted_rank_weight=corrupted_rank_weight,
+    )
+    rank_gt = ranking_terms["rank_gt"]
+    rank_corrupted = ranking_terms["rank_corrupted"]
     q_pred = pred_out["mismatch"].sigmoid()
     fp = (((1.0 - target) * student_mask * q_pred).sum() /
           ((1.0 - target).sum().clamp_min(1.0)))
-    total = rank_gt + float(corrupted_rank_weight) * rank_corrupted + fp
+    total = ranking + fp
+    energy_gap = e_corrupted.detach() - e_gt
+    margin_feasibility_gap = energy_gap - 2.0 * float(margin)
+    ordered = (
+        (e_gt + float(margin) < e_pred.detach())
+        & (e_pred.detach() < e_corrupted.detach() - float(margin))
+    )
     return total, {
         "rank_gt": rank_gt.detach(),
         "rank_corrupted": rank_corrupted.detach(),
         "fp": fp.detach(),
+        "background_fp_penalty": fp.detach(),
         "e_pred": e_pred.detach().mean(),
         "e_gt": e_gt.detach().mean(),
         "e_corrupted": e_corrupted.detach().mean(),
         "delta_pred_gt": (e_pred.detach() - e_gt).mean(),
         "delta_pred_corrupted": (e_pred.detach() - e_corrupted).mean(),
+        "energy_gap": energy_gap.mean(),
+        "margin_feasibility_gap": margin_feasibility_gap.mean(),
+        "ordered_fraction": ordered.float().mean(),
     }

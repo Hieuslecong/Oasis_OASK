@@ -2,6 +2,8 @@ import hashlib
 import json
 from pathlib import Path
 
+import torch
+
 from .checkpoint import sha256_file
 
 
@@ -46,7 +48,13 @@ def dataset_content_sha256(manifest):
     return h.hexdigest()
 
 
-def verify_gate0_certificate(certificate_path, training_manifest, image_size, normal_policy):
+def verify_gate0_certificate(
+    certificate_path,
+    training_manifest,
+    image_size,
+    normal_policy,
+    full_certificate_path=None,
+):
     if not certificate_path:
         raise ValueError("official training requires --gate0-certificate")
     p = Path(certificate_path)
@@ -64,6 +72,14 @@ def verify_gate0_certificate(certificate_path, training_manifest, image_size, no
         raise ValueError("Gate 0 certificate resize_size mismatch")
     if cert.get("normal_policy") != normal_policy:
         raise ValueError("Gate 0 certificate normal_policy mismatch")
+    if not full_certificate_path:
+        raise ValueError("training-view verification requires full Gate 0 certificate")
+    full_path = Path(full_certificate_path)
+    full = json.loads(full_path.read_text())
+    if full.get("status") != "PASS" or full.get("scope") != "full_benchmark":
+        raise ValueError("full Gate 0 certificate must be PASS/full_benchmark")
+    if cert.get("parent_full_gate0_certificate_sha256") != sha256_file(full_path):
+        raise ValueError("training-view certificate parent full Gate 0 mismatch")
     return cert
 
 
@@ -85,6 +101,15 @@ def verify_final_test_authorization(
         raise ValueError("final-test authorization manifest SHA256 mismatch")
     if auth.get("dataset_content_sha256") != dataset_content_sha256(manifest):
         raise ValueError("final-test authorization dataset-content SHA256 mismatch")
+    checkpoint_data = torch.load(checkpoint, map_location="cpu", weights_only=False)
+    if auth.get("training_view_dataset_sha256") != checkpoint_data.get(
+        "training_view_dataset_sha256"
+    ):
+        raise ValueError("final-test authorization training-view provenance mismatch")
+    if auth.get("full_gate0_certificate_sha256") != checkpoint_data.get(
+        "full_gate0_certificate_sha256"
+    ):
+        raise ValueError("final-test authorization full-benchmark provenance mismatch")
     if abs(float(auth.get("threshold")) - float(threshold)) > 1e-12:
         raise ValueError("final-test authorization threshold mismatch")
     return auth

@@ -2,10 +2,11 @@
 set -euo pipefail
 
 PACKAGE_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-MANIFEST="${1:?Usage: scripts/run_smoke.sh trainval_manifest.jsonl gate0_training.json student_init.pt [student_kind]}"
+MANIFEST="${1:?Usage: scripts/run_smoke.sh trainval_manifest.jsonl gate0_training.json student_init.pt student_kind gate0_full.json}"
 GATE0_CERTIFICATE="${2:?Missing Gate 0 training-view certificate}"
 STUDENT_INIT="${3:?Missing canonical student init checkpoint}"
 STUDENT_KIND="${4:-multiscale}"
+FULL_GATE0_CERTIFICATE="${5:?Missing full-benchmark Gate 0 certificate}"
 STUDENT_WIDTH="${STUDENT_WIDTH:-}"
 CONFIG="${CONFIG:-$PACKAGE_ROOT/configs/canonical_gpu_256_seed1337.yaml}"
 NORMAL_FRACTION="${NORMAL_FRACTION:?set NORMAL_FRACTION explicitly: 0.0 or 0.25}"
@@ -19,7 +20,7 @@ SMOKE_RAMP_EPOCHS="${SMOKE_RAMP_EPOCHS:-1}"
 export PYTHONPATH="$PACKAGE_ROOT/src${PYTHONPATH:+:$PYTHONPATH}"
 export CUBLAS_WORKSPACE_CONFIG="${CUBLAS_WORKSPACE_CONFIG:-:4096:8}"
 
-for f in "$MANIFEST" "$GATE0_CERTIFICATE" "$STUDENT_INIT" "$CONFIG"; do
+for f in "$MANIFEST" "$GATE0_CERTIFICATE" "$FULL_GATE0_CERTIFICATE" "$STUDENT_INIT" "$CONFIG"; do
   test -f "$f" || { echo "MISSING: $f" >&2; exit 2; }
 done
 
@@ -44,6 +45,7 @@ PY
 
 "$PYTHON" -m oasis_cycle_aosk.train_oasis_rc_v2 \
   --config "$CONFIG" --manifest "$MANIFEST" --gate0-certificate "$GATE0_CERTIFICATE" \
+  --full-gate0-certificate "$FULL_GATE0_CERTIFICATE" \
   --out "$RUN_ROOT/critic" --mode critic --critic-epochs "$SMOKE_CRITIC_EPOCHS" \
   --normal-fraction "$NORMAL_FRACTION" --normal-critic-weight 1.0 \
   --determinism-mode "$DETERMINISM_MODE"
@@ -61,6 +63,7 @@ run() {
   local name="$1" mode="$2"; shift 2
   "$PYTHON" -m oasis_cycle_aosk.train_oasis_rc_v2 \
     --config "$CONFIG" --manifest "$MANIFEST" --gate0-certificate "$GATE0_CERTIFICATE" \
+    --full-gate0-certificate "$FULL_GATE0_CERTIFICATE" \
     --out "$RUN_ROOT/$name" --mode "$mode" --student-kind "$STUDENT_KIND" --student-width "$STUDENT_WIDTH" \
     --epochs "$SMOKE_EPOCHS" --warmup "$SMOKE_WARMUP" --ramp-epochs "$SMOKE_RAMP_EPOCHS" \
     --normal-fraction "$NORMAL_FRACTION" --determinism-mode "$DETERMINISM_MODE" \

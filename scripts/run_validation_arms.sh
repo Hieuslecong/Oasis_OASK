@@ -10,6 +10,7 @@ export CUBLAS_WORKSPACE_CONFIG="${CUBLAS_WORKSPACE_CONFIG:-:4096:8}"
 CONFIG="${CONFIG:?set CONFIG}"
 MANIFEST="${MANIFEST:?set MANIFEST}"
 GATE0_CERTIFICATE="${GATE0_CERTIFICATE:?set GATE0_CERTIFICATE}"
+FULL_GATE0_CERTIFICATE="${FULL_GATE0_CERTIFICATE:?set FULL_GATE0_CERTIFICATE}"
 STUDENT_INIT="${STUDENT_INIT:?set STUDENT_INIT}"
 CRITIC="${CRITIC:?set CRITIC}"
 NORMAL_FRACTION="${NORMAL_FRACTION:?set NORMAL_FRACTION explicitly}"
@@ -23,7 +24,7 @@ LAMBDA_AOSK="${LAMBDA_AOSK:-0.01}"
 DETERMINISM_MODE="${DETERMINISM_MODE:-best_effort}"
 ARM_ROOT="${ARM_ROOT:-$EXP_ROOT/arms}"
 
-for f in "$MANIFEST" "$GATE0_CERTIFICATE" "$STUDENT_INIT" "$CRITIC"; do
+for f in "$MANIFEST" "$GATE0_CERTIFICATE" "$FULL_GATE0_CERTIFICATE" "$STUDENT_INIT" "$CRITIC"; do
   test -f "$f" || { echo "MISSING: $f" >&2; exit 2; }
 done
 mkdir -p "$ARM_ROOT"
@@ -33,6 +34,7 @@ run_arm() {
   local out="$ARM_ROOT/$name"; mkdir -p "$out"
   "$PYTHON" -m oasis_cycle_aosk.train_oasis_rc_v2 \
     --config "$CONFIG" --manifest "$MANIFEST" --gate0-certificate "$GATE0_CERTIFICATE" \
+    --full-gate0-certificate "$FULL_GATE0_CERTIFICATE" \
     --out "$out" --mode "$mode" --student-kind "$STUDENT_KIND" --student-width "$STUDENT_WIDTH" \
     --epochs "$EPOCHS" --warmup "$WARMUP" --ramp-epochs "$RAMP" \
     --normal-fraction "$NORMAL_FRACTION" --determinism-mode "$DETERMINISM_MODE" \
