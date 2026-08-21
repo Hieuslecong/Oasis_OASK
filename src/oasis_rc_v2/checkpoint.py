@@ -1,10 +1,10 @@
 import hashlib
 from pathlib import Path
 
-EXPERIMENT_ID = "oasis-rc-v2-relational-hard-negative"
-CHECKPOINT_SCHEMA = 3
-IMPLEMENTATION_VERSION = "2.0.4"
-METHOD_VERSION = "OASIS-RC-v2"
+EXPERIMENT_ID = "oasis-rc-v2.1-gt-anchored-relational-energy"
+CHECKPOINT_SCHEMA = 4
+IMPLEMENTATION_VERSION = "2.1.0-dev"
+METHOD_VERSION = "OASIS-RC-v2.1"
 
 
 def sha256_file(path):
