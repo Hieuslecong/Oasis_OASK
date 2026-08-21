@@ -357,6 +357,11 @@ def qualify_critic(critic, args, cfg, device, out):
     representation = critic_metrics(
         critic, val_loader, device, normal_loader=normal_loader
     )
+    # ``critic_metrics`` is shared with reconstructed v2.0.4 and historically
+    # labels any supplied normal loader as ``normal_train``. v2.1 deliberately
+    # qualifies N25 on held-out ``normal_val``; overwrite only this provenance
+    # label so the report describes the loader that was actually constructed.
+    representation["normal_diagnostic_split"] = normal_split
     energy = energy_qualification(critic, val_loader, device, args.path_margin)
     failures = connected_gate_failures(representation, energy)
     report = {
