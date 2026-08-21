@@ -1,7 +1,8 @@
 {
-  "schema": "oasis-rc-v2.1-protocol-v1",
+  "schema": "oasis-rc-v2.1-protocol-v2",
   "method_version": "OASIS-RC-v2.1",
-  "implementation_version": "2.1.0-dev",
+  "implementation_version": "2.1.0-dev1",
+  "checkpoint_schema": 5,
   "method_spec": "METHOD_SPEC_V2_1.md",
   "status": "development-not-confirmatory",
   "primary_backbone": "mobilenetv3",
@@ -10,7 +11,7 @@
   "student_width": 16,
   "data_protocols": {
     "N0": "no-external-normal; certified native-empty rows may remain true-negative",
-    "N25": "25-percent external-normal update-budget protocol",
+    "N25": "25-percent external-normal update-budget protocol with lineage-disjoint normal_train/normal_val/normal_test",
     "n0_n25_causal_claim": false,
     "matched_crack_exposure_control_required_for_normal_causal_claim": true
   },
@@ -24,13 +25,19 @@
   },
   "critic": {
     "width": 8,
-    "classification_loss": "0.5*(clean+corrupt)+rgb-shuffle-pair-only+optional-normal-donor",
+    "representation_loss": "0.5*(clean+corrupt)+rgb-shuffle-pair-only+optional-normal-donor",
+    "energy_head_contract": "dedicated-scalar-lower-is-better-v1",
     "rgb_mask_weight": 1.0,
     "normal_critic_weight": 1.0,
+    "energy_endpoint": {
+      "weight": 1.0,
+      "anchor_weight": 0.25,
+      "margin": 0.05
+    },
     "continuous_path": {
       "enabled": true,
       "levels": [0.0, 0.25, 0.5, 0.75, 1.0],
-      "weight": 0.25,
+      "weight": 1.0,
       "margin_per_unit_t": 0.02
     },
     "qualification": {
@@ -44,6 +51,12 @@
         "energy_samples_min": 16,
         "energy_finite": true
       },
+      "toy_release_thresholds": {
+        "positive_energy_gap_fraction_min": 0.90,
+        "continuous_path_order_fraction_min": 0.80,
+        "mean_energy_gap_gt": 0.0,
+        "median_energy_gap_gt": 0.0
+      },
       "confirmatory_thresholds_must_be_frozen_after_dev": true,
       "s0_soft_prediction_gradient_diagnostic_required": true
     }
@@ -52,7 +65,6 @@
     "anchor": "SmoothL1(E_pred,E_gt)",
     "reject": "ReLU(E_pred-E_corrupted+margin)",
     "margin": 0.10,
-    "pair_weight": 0.25,
     "corrupted_rank_weight": 1.0,
     "fp_weight": 1.0,
     "lambda_oasis": 0.001,
