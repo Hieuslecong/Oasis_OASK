@@ -56,6 +56,7 @@ def main():
     a=p.parse_args()
 
     repo_root=Path(__file__).resolve().parents[1]
+    out=Path(a.out); out.parent.mkdir(parents=True,exist_ok=True)
     cfg=yaml.safe_load(Path(a.config).read_text())
     device=torch.device(cfg["device"])
     if device.type!="cuda" or not torch.cuda.is_available():
@@ -66,14 +67,24 @@ def main():
     )
     torch.cuda.reset_peak_memory_stats(device)
 
-    dataset=ManifestDataset(a.manifest,"train",cfg["image_size"],return_is_normal=True)
-    crack_rows=[]; normal_rows=[]
-    for i in range(len(dataset)):
-        sample=dataset[i]
-        (normal_rows if bool(sample[2]) else crack_rows).append(sample)
-        if len(crack_rows)>=2 and (a.normal_fraction==0 or len(normal_rows)>=1): break
+    crack_dataset=ManifestDataset(a.manifest,"train",cfg["image_size"],return_is_normal=True)
+    crack_rows=[]
+    for i in range(len(crack_dataset)):
+        sample=crack_dataset[i]
+        if not bool(sample[2]) and float(sample[1].sum())>0:
+            crack_rows.append(sample)
+        if len(crack_rows)>=2: break
     if len(crack_rows)<2: raise SystemExit("preflight requires >=2 crack-positive training rows")
-    if a.normal_fraction>0 and not normal_rows: raise SystemExit("N25 preflight requires true-normal training row")
+
+    normal_rows=[]
+    if a.normal_fraction>0:
+        normal_dataset=ManifestDataset(a.manifest,"normal_train",cfg["image_size"],return_is_normal=True)
+        for i in range(min(2,len(normal_dataset))):
+            sample=normal_dataset[i]
+            if bool(sample[2]) and float(sample[1].sum())==0:
+                normal_rows.append(sample)
+        if not normal_rows: raise SystemExit("N25 preflight requires true-normal normal_train row")
+
     samples=crack_rows[:2]+(normal_rows[:1] if a.normal_fraction>0 else [])
     x=torch.stack([s[0] for s in samples]).to(device)
     y=torch.stack([s[1] for s in samples]).to(device)
@@ -113,7 +124,7 @@ def main():
         arm_results[mode]={"loss":float(total.detach()),"student_grad_finite":True,"critic_frozen":True}
         del student,logits,total
 
-    props=torch.cuda.get_device_properties(device); disk=shutil.disk_usage(Path(a.out).parent)
+    props=torch.cuda.get_device_properties(device); disk=shutil.disk_usage(out.parent)
     if props.total_memory<20*1024**3: raise SystemExit("v2.1 official development run requires >=20 GiB GPU memory")
     if disk.free<20*1024**3: raise SystemExit("v2.1 run requires >=20 GiB free output storage")
     git_head=command("git","-C",str(repo_root),"rev-parse","HEAD")
@@ -134,7 +145,7 @@ def main():
         "disk_free_bytes":disk.free,"cublas_workspace_config":os.environ.get("CUBLAS_WORKSPACE_CONFIG"),
         "canonical_test_opened":False,
     }
-    out=Path(a.out); out.parent.mkdir(parents=True,exist_ok=True); out.write_text(json.dumps(report,indent=2)); print(json.dumps(report,indent=2))
+    out.write_text(json.dumps(report,indent=2)); print(json.dumps(report,indent=2))
 
 
 if __name__=="__main__": main()
