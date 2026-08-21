@@ -58,6 +58,7 @@ def _one_student_step(mode, critic, initial_state):
     student.load_state_dict(copy.deepcopy(initial_state))
     opt = torch.optim.AdamW(student.parameters(), lr=1e-3, weight_decay=0.0)
     critic.eval()
+    critic.zero_grad(set_to_none=True)
     for p in critic.parameters():
         p.requires_grad_(False)
     logits = student(x)
