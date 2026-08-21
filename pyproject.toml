@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "oasis-rc-v2-crack-segmentation"
-version = "2.1.0.dev0"
-description = "OASIS-RC v2.1 GT-anchored relational-energy training for lightweight crack segmentation"
+version = "2.1.0.dev1"
+description = "OASIS-RC v2.1 GT-anchored dedicated relation-energy training for lightweight crack segmentation"
 requires-python = ">=3.10"
 dependencies = [
   "torch>=2.3",
