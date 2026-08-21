@@ -23,7 +23,7 @@ RGB -> lightweight student -> crack logits/mask
 
 The relation critic, relation-energy head, AOSK and clDice supervision are training-only. Deployment checkpoints must not contain critic/generator/discriminator/AOSK state.
 
-The canonical primary student is MobileNetV3-Small-style with **fixed canonical width metadata `16`**. This implementation does not expose width scaling for MobileNetV3; using any other `student_width` is rejected by canonical initialization/preflight and by deployment-checkpoint validation. Other lightweight backbones retain their explicit width parameter.
+The canonical primary student is MobileNetV3-Small-style with **fixed canonical width metadata `16`**. This implementation does not expose width scaling for MobileNetV3; canonical shared initialization rejects any other `student_width`, and deployment-checkpoint validation rejects non-16 MobileNetV3 metadata. Other lightweight backbones retain their explicit width parameter.
 
 ## Experimental arms
 
