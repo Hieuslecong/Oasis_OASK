@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from pathlib import Path
 
 import torch
@@ -33,11 +34,13 @@ REQUIRED_TOP = {
     "protocol_sha256",
     "evaluator",
     "evaluator_sha256",
+    "metric_spec",
     "metric_spec_sha256",
     "git_commit_sha",
     "entries",
 }
 REQUIRED_ENTRY = {"arm", "seed", "checkpoint", "checkpoint_sha256", "threshold"}
+HEX40 = re.compile(r"^[0-9a-f]{40}$")
 
 
 def _content_identity_payload(bundle):
@@ -96,6 +99,14 @@ def _validate_checkpoint_binding(entry, bundle):
         raise ValueError(f"bundle threshold/checkpoint mismatch {(arm, seed)}")
     if ck["full_gate0_certificate_sha256"] != bundle["full_gate0_certificate_sha256"]:
         raise ValueError(f"bundle/checkpoint full Gate0 mismatch {(arm, seed)}")
+    runtime = ck.get("runtime")
+    if not isinstance(runtime, dict):
+        raise ValueError(f"checkpoint runtime provenance missing {(arm, seed)}")
+    if runtime.get("git_sha") != bundle["git_commit_sha"]:
+        raise ValueError(
+            f"bundle/checkpoint git commit mismatch {(arm, seed)}: "
+            f"expected {bundle['git_commit_sha']!r}, got {runtime.get('git_sha')!r}"
+        )
     return ck
 
 
@@ -107,9 +118,9 @@ def validate_final_bundle(
     """Validate the one-shot confirmatory bundle fail-closed.
 
     Canonical final evaluation requires exactly the preregistered five seeds,
-    all six arms, correct arm-to-checkpoint semantics, and paired provenance.
-    Development utilities may override ``expected_seeds`` explicitly; the final
-    runner intentionally uses the default contract.
+    all six arms, correct arm-to-checkpoint semantics, paired provenance, a
+    frozen metric specification, and one exact Git commit shared by every
+    bundled checkpoint.
     """
     p = Path(bundle_path)
     b = json.loads(p.read_text())
@@ -118,12 +129,15 @@ def validate_final_bundle(
         raise ValueError("bundle missing: " + ", ".join(missing))
     if b["schema"] != "oasis-rc-v2.1-final-bundle-v1":
         raise ValueError("invalid bundle schema")
+    if not isinstance(b["git_commit_sha"], str) or not HEX40.fullmatch(b["git_commit_sha"]):
+        raise ValueError("git_commit_sha must be a lowercase 40-character commit SHA")
     checks = (
         ("manifest", "manifest_sha256"),
         ("full_gate0_certificate", "full_gate0_certificate_sha256"),
         ("method_spec", "method_spec_sha256"),
         ("protocol", "protocol_sha256"),
         ("evaluator", "evaluator_sha256"),
+        ("metric_spec", "metric_spec_sha256"),
     )
     for path_key, sha_key in checks:
         if sha256_file(b[path_key]) != b[sha_key]:
