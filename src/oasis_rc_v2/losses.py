@@ -58,7 +58,7 @@ def oasis_rc_critic_loss(
     mismatch_weight=1.0,
     pair_weight=0.25,
 ):
-    """Critic objective retained from the reconstructed v2 lineage."""
+    """Critic classification objective retained from the reconstructed v2 lineage."""
     rgb_shuffle_only = bool(
         pair_valid.numel() > 0
         and torch.all(pair_valid.detach() <= 0.5)
@@ -154,6 +154,64 @@ def relational_ranking_loss(
         e_corrupted,
         margin=margin,
         corrupted_rank_weight=corrupted_rank_weight,
+    )
+
+
+def continuous_relation_path_loss(
+    critic,
+    image,
+    gt_mask,
+    corrupted_mask,
+    pair_weight=0.25,
+    margin=0.02,
+    levels=(0.0, 0.25, 0.5, 0.75, 1.0),
+):
+    """Calibrate critic energy on soft GT→corruption trajectories.
+
+    For increasing corruption severity t, adjacent energies are encouraged to
+    satisfy E(M_ti) + margin*(tj-ti) <= E(M_tj). Rows whose corruption did not
+    change the mask are excluded. This term trains the critic on the continuous
+    mask manifold used later by student probabilities rather than only binary
+    endpoints.
+    """
+    if len(levels) < 2:
+        raise ValueError("continuous relation path needs at least two levels")
+    levels = tuple(float(t) for t in levels)
+    if levels[0] != 0.0 or levels[-1] != 1.0 or any(
+        b <= a for a, b in zip(levels, levels[1:])
+    ):
+        raise ValueError("levels must be strictly increasing from 0 to 1")
+    changed = (gt_mask - corrupted_mask).abs().flatten(1).sum(1) > 0
+    if not changed.any():
+        zero = image.sum() * 0.0
+        return zero, {"path_pairs": 0, "path_order_fraction": image.new_tensor(1.0)}
+    x = image[changed]
+    g = gt_mask[changed]
+    c = corrupted_mask[changed]
+    energies = []
+    for t in levels:
+        mask = (1.0 - t) * g + t * c
+        energies.append(relation_energy(critic(x, mask), pair_weight=pair_weight))
+    penalties = []
+    ordered = []
+    for left, right, t0, t1 in zip(energies, energies[1:], levels, levels[1:]):
+        required = float(margin) * float(t1 - t0)
+        penalties.append(F.relu(left - right + required))
+        ordered.append((left.detach() + required <= right.detach()).float())
+    stacked = torch.cat([p.reshape(-1) for p in penalties])
+    ordered_stacked = torch.cat([o.reshape(-1) for o in ordered])
+    return stacked.mean(), {
+        "path_pairs": int(stacked.numel()),
+        "path_order_fraction": ordered_stacked.mean(),
+        "path_energy_start": energies[0].detach().mean(),
+        "path_energy_end": energies[-1].detach().mean(),
+    }
+
+
+def adversarial_pair_student_loss(pred_out):
+    """Conventional pair-adversarial control using the frozen critic pair head only."""
+    return F.binary_cross_entropy_with_logits(
+        pred_out["pair"], torch.ones_like(pred_out["pair"])
     )
 
 
