@@ -27,15 +27,11 @@ from oasis_rc_v2.losses import segmentation_loss, oasis_rc_student_loss_v2
 
 
 def flat(loss, params, retain=False):
-    grads = torch.autograd.grad(
-        loss, params, retain_graph=retain, allow_unused=True
-    )
-    return torch.cat(
-        [
-            (torch.zeros_like(p) if g is None else g).reshape(-1)
-            for p, g in zip(params, grads)
-        ]
-    )
+    grads = torch.autograd.grad(loss, params, retain_graph=retain, allow_unused=True)
+    return torch.cat([
+        (torch.zeros_like(p) if g is None else g).reshape(-1)
+        for p, g in zip(params, grads)
+    ])
 
 
 def fixture():
@@ -65,30 +61,19 @@ def test_s1_equals_s3_when_lambda_aosk_zero():
     logits = student(x)
     seg = segmentation_loss(logits, y)
     pred = logits.sigmoid()
-    wrong, _ = make_corrupted_mask(
-        y, generator=make_generator(torch.device("cpu"), 17)
-    )
+    wrong, _ = make_corrupted_mask(y, generator=make_generator(torch.device("cpu"), 17))
     with torch.no_grad():
         gt = critic(x, y)
         corrupt = critic(x, wrong)
-    rc, extras = oasis_rc_student_loss_v2(
-        critic(x, pred), gt, corrupt, pred, y
-    )
+    rc, extras = oasis_rc_student_loss_v2(critic(x, pred), gt, corrupt, pred, y)
     aosk = oriented_consistency_loss(logits, x, y)
     assert torch.equal(
         flat(seg + 0.001 * rc, params, True),
         flat(seg + 0.001 * rc + 0 * aosk, params),
     )
-    assert all(
-        key in extras
-        for key in (
-            "e_pred",
-            "e_gt",
-            "e_corrupted",
-            "delta_pred_gt",
-            "delta_pred_corrupted",
-        )
-    )
+    assert all(key in extras for key in (
+        "e_pred", "e_gt", "e_corrupted", "delta_pred_gt", "delta_pred_corrupted"
+    ))
 
 
 def test_rc_corruption_rng_does_not_change_augmentation_sequence():
@@ -141,9 +126,7 @@ def test_two_step_zero_rc_equivalence():
         with torch.no_grad():
             gt = critic(xr, yr)
             corrupt = critic(xr, wrong)
-        rc, _ = oasis_rc_student_loss_v2(
-            critic(xr, pred), gt, corrupt, pred, yr
-        )
+        rc, _ = oasis_rc_student_loss_v2(critic(xr, pred), gt, corrupt, pred, yr)
         loss_connected = seg + 0 * rc
         opt_connected.zero_grad()
         loss_connected.backward()
@@ -160,15 +143,12 @@ def test_student_init_seed_mismatch_is_rejected(tmp_path):
     student = MultiScaleLightweightSegmenter(width=4)
     setattr(student, "_oasis_width", 4)
     path = tmp_path / "init.pt"
-    torch.save(
-        {
-            "student": student.state_dict(),
-            "student_kind": "multiscale",
-            "student_width": 4,
-            "seed": 1337,
-        },
-        path,
-    )
+    torch.save({
+        "student": student.state_dict(),
+        "student_kind": "multiscale",
+        "student_width": 4,
+        "seed": 1337,
+    }, path)
     with pytest.raises(ValueError, match="seed mismatch"):
         load_student_init(student, path, 2027)
 
@@ -207,6 +187,7 @@ def test_critic_provenance_and_schema_fail_closed(tmp_path):
         "experiment_id": EXPERIMENT_ID,
         "method_version": METHOD_VERSION,
         "implementation_version": IMPLEMENTATION_VERSION,
+        "energy_head_contract": "dedicated-scalar-lower-is-better-v1",
         "critic": {},
         "width": 8,
         "seed": 1337,
