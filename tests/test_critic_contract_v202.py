@@ -22,6 +22,7 @@ def test_strict_validator_rejects_missing_v202_flags(tmp_path):
     saved = {
         "checkpoint_schema": CHECKPOINT_SCHEMA, "experiment_id": EXPERIMENT_ID,
         "method_version": METHOD_VERSION, "implementation_version": IMPLEMENTATION_VERSION,
+        "energy_head_contract": "dedicated-scalar-lower-is-better-v1",
         "critic": {}, "width": 8, "config": cfg,
         "seed": 1337,
         "full_gate0_certificate_sha256": __import__("hashlib").sha256(
@@ -36,5 +37,7 @@ def test_strict_validator_rejects_missing_v202_flags(tmp_path):
             "normal_critic_weight": 1.0, "normal_fraction": 0.25,
         },
     }
+    # Schema-5 identity is valid; this fixture deliberately omits the old
+    # representation flags so the validator must still fail closed on them.
     with pytest.raises(ValueError, match="rgb_shuffle_pair_only"):
         validate_loaded_critic(saved, args, cfg)
