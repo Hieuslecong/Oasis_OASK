@@ -1,7 +1,7 @@
 {
-  "schema": "oasis-rc-v2.1-protocol-v2",
+  "schema": "oasis-rc-v2.1-protocol-v3",
   "method_version": "OASIS-RC-v2.1",
-  "implementation_version": "2.1.0-dev1",
+  "implementation_version": "2.1.0-dev2",
   "checkpoint_schema": 5,
   "method_spec": "METHOD_SPEC_V2_1.md",
   "status": "development-not-confirmatory",
@@ -11,7 +11,8 @@
   "student_width": 16,
   "data_protocols": {
     "N0": "no-external-normal; certified native-empty rows may remain true-negative",
-    "N25": "25-percent external-normal update-budget protocol with lineage-disjoint normal_train/normal_val/normal_test",
+    "N25": "25-percent external-normal batch-composition protocol with lineage-disjoint normal_train/normal_val/normal_test",
+    "normal_policy_contract": "train_and_aux_val is a strict superset of train; N0 accepts none only",
     "n0_n25_causal_claim": false,
     "matched_crack_exposure_control_required_for_normal_causal_claim": true
   },
@@ -43,6 +44,10 @@
     "qualification": {
       "classification_gate_required": true,
       "energy_gate_required": true,
+      "current_weights_requalification_required_for_every_critic_consumer": true,
+      "stored_qualification_is_provenance_not_sole_authorization": true,
+      "normal_fraction_positive_requires_normal_val": true,
+      "global_energy_median_must_be_computed_over_all_validation_samples": true,
       "development_thresholds": {
         "positive_energy_gap_fraction_min": 0.70,
         "continuous_path_order_fraction_min": 0.65,
@@ -67,26 +72,30 @@
     "margin": 0.10,
     "corrupted_rank_weight": 1.0,
     "fp_weight": 1.0,
-    "lambda_oasis": 0.001,
+    "lambda_oasis_development_default": 0.001,
+    "lambda_must_be_calibrated_on_development_seed_before_confirmatory": true,
+    "raw_and_lambda_weighted_gradient_ratio_must_be_logged": true,
     "warmup_epochs": 4,
     "ramp_epochs": 3
   },
   "aosk": {
-    "variant": "oriented-consistency-v1-isotropic-flat",
-    "lambda": 0.01,
-    "claim": "orientation-aware local consistency; not a topology loss"
+    "variant": "structure-tensor-steered-v2",
+    "development_lambda_default": 0.01,
+    "orientation": "2x2 structure tensor with Jxx/Jyy/Jxy, tangent eigen-orientation, bilinear +/-tangent sampling",
+    "low_coherence_policy": "smooth isotropic fallback",
+    "claim": "arbitrary-angle image-guided local consistency; not a topology loss"
   },
   "strong_baselines": {
     "B0": "BCE+Dice",
     "B1": "BCE+Dice+clDice",
-    "B2": "BCE+Dice+conventional-pair-adversarial",
+    "B2": "BCE+Dice+frozen-pretrained-pair-critic (ablation; not conventional jointly-trained adversarial)",
     "S1": "BCE+Dice+RC-v2.1",
-    "S2": "BCE+Dice+AOSK",
-    "S3": "BCE+Dice+RC-v2.1+AOSK"
+    "S2": "BCE+Dice+AOSK-structure-tensor-v2",
+    "S3": "BCE+Dice+RC-v2.1+AOSK-structure-tensor-v2"
   },
   "selection": {
-    "checkpoint": "max validation micro Dice",
-    "threshold": "max validation micro Dice; normal-FP tie break only",
+    "checkpoint": "max validation micro Dice on crack validation population",
+    "threshold": "max validation micro Dice on crack validation population",
     "topology_and_fp_are_secondary_outcomes_not_selection_targets": true
   },
   "statistics": {
@@ -94,21 +103,32 @@
     "confirmatory_primary_seeds": [2027, 31415, 42421, 51511, 62617],
     "secondary_backbone_min_seeds": 3,
     "paired_by_seed_and_initialization": true,
-    "per_image_paired_bootstrap_ci": true,
+    "sampling_unit": "training_seed",
+    "seed_level_delta_required": true,
+    "seed_bootstrap_ci": true,
+    "exact_sign_flip_p_is_secondary": true,
+    "holm_correction_within_metric_family": true,
+    "report_effect_size_cohen_dz": true,
     "report_mean_std_median_direction_consistency": true,
     "development_seed_excluded_from_confirmatory_if_any_tuning_occurs": true
   },
   "evaluation": {
-    "pixel": ["precision", "recall", "dice", "iou"],
-    "per_image": ["dice", "iou"],
-    "structure": ["cldice", "skeleton_precision", "skeleton_recall"],
-    "false_positive": ["normal_fp_pixels", "normal_fp_components", "normal_any_fp_rate"],
+    "crack_population_pixel": ["precision", "recall", "dice", "iou"],
+    "crack_population_per_image": ["dice", "iou"],
+    "structure_on_crack_rows": ["cldice", "skeleton_precision", "skeleton_recall", "component_excess"],
+    "false_positive_on_normal_rows": ["normal_fp_pixels", "normal_fp_components", "normal_any_fp_rate"],
+    "never_average_crack_overlap_metrics_over_true_negative_rows": true,
     "deployment": ["parameters", "macs_or_flops", "checkpoint_bytes", "batch1_latency", "fps", "peak_memory"],
     "save_per_image_predictions_before_final_close": true
   },
   "final_test": {
-    "policy": "single-open immutable multi-checkpoint bundle",
+    "policy": "single-open immutable six-arm multi-seed bundle",
+    "canonical_splits": ["test", "normal_test"],
+    "development_evaluators_must_refuse_both_canonical_splits": true,
+    "content_addressed_bundle_id": true,
+    "stable_external_ledger_root_required": true,
     "canonical_test_must_remain_closed_during_development": true,
+    "required_arms": ["B0", "B1", "B2", "S1", "S2", "S3"],
     "bind": [
       "dataset_content_sha256",
       "manifest_sha256",
