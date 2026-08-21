@@ -5,11 +5,21 @@ import hashlib
 import json
 from pathlib import Path
 
-from .checkpoint import sha256_file
+import torch
+
+from .checkpoint import sha256_file, validate_student_checkpoint
 from .protocol import dataset_content_sha256
 
 CANONICAL_ARMS = ("B0", "B1", "B2", "S1", "S2", "S3")
 CANONICAL_CONFIRMATORY_SEEDS = (2027, 31415, 42421, 51511, 62617)
+ARM_TO_MODE = {
+    "B0": "control",
+    "B1": "cldice",
+    "B2": "adversarial",  # frozen pretrained pair-critic implementation token
+    "S1": "connected",
+    "S2": "aosk",
+    "S3": "aosk_connected",
+}
 REQUIRED_TOP = {
     "schema",
     "manifest",
@@ -31,11 +41,7 @@ REQUIRED_ENTRY = {"arm", "seed", "checkpoint", "checkpoint_sha256", "threshold"}
 
 
 def _content_identity_payload(bundle):
-    """Return a relocation-invariant final-test identity.
-
-    Paths are deliberately excluded. Exact content hashes, frozen thresholds,
-    arm/seed identities and the frozen git commit define the opening namespace.
-    """
+    """Return a relocation-invariant final-test identity."""
     entries = sorted(
         (
             {
@@ -72,6 +78,27 @@ def canonical_bundle_id(bundle):
     return hashlib.sha256(raw).hexdigest()
 
 
+def _validate_checkpoint_binding(entry, bundle):
+    arm = str(entry["arm"])
+    seed = int(entry["seed"])
+    if arm not in ARM_TO_MODE:
+        raise ValueError(f"unknown final-bundle arm {arm!r}")
+    ck = torch.load(entry["checkpoint"], map_location="cpu", weights_only=False)
+    validate_student_checkpoint(ck)
+    if int(ck["seed"]) != seed:
+        raise ValueError(f"bundle seed/checkpoint mismatch {(arm, seed)}")
+    if ck["mode"] != ARM_TO_MODE[arm]:
+        raise ValueError(
+            f"bundle arm/checkpoint mode mismatch {(arm, seed)}: "
+            f"expected {ARM_TO_MODE[arm]!r}, got {ck['mode']!r}"
+        )
+    if abs(float(ck["threshold_validation"]) - float(entry["threshold"])) > 1e-12:
+        raise ValueError(f"bundle threshold/checkpoint mismatch {(arm, seed)}")
+    if ck["full_gate0_certificate_sha256"] != bundle["full_gate0_certificate_sha256"]:
+        raise ValueError(f"bundle/checkpoint full Gate0 mismatch {(arm, seed)}")
+    return ck
+
+
 def validate_final_bundle(
     bundle_path,
     expected_arms=CANONICAL_ARMS,
@@ -79,10 +106,10 @@ def validate_final_bundle(
 ):
     """Validate the one-shot confirmatory bundle fail-closed.
 
-    By default the final bundle must contain exactly the preregistered five
-    confirmatory seeds and all six canonical arms for every seed. Development
-    utilities may override ``expected_seeds`` explicitly, but the canonical
-    final runner intentionally uses the default contract.
+    Canonical final evaluation requires exactly the preregistered five seeds,
+    all six arms, correct arm-to-checkpoint semantics, and paired provenance.
+    Development utilities may override ``expected_seeds`` explicitly; the final
+    runner intentionally uses the default contract.
     """
     p = Path(bundle_path)
     b = json.loads(p.read_text())
@@ -116,6 +143,7 @@ def validate_final_bundle(
         raise ValueError("entries must be non-empty")
     seen = set()
     by_seed = {}
+    paired = {}
     for e in entries:
         miss = sorted(REQUIRED_ENTRY - set(e))
         if miss:
@@ -130,6 +158,26 @@ def validate_final_bundle(
         t = float(e["threshold"])
         if not 0 < t < 1:
             raise ValueError(f"invalid threshold {key}")
+        ck = _validate_checkpoint_binding(e, b)
+        seed = int(e["seed"])
+        state = paired.setdefault(
+            seed,
+            {
+                "student_init_sha256": ck["student_init_sha256"],
+                "training_view_dataset_sha256": ck["training_view_dataset_sha256"],
+                "gate0_certificate_sha256": ck["gate0_certificate_sha256"],
+            },
+        )
+        for field in (
+            "student_init_sha256",
+            "training_view_dataset_sha256",
+            "gate0_certificate_sha256",
+        ):
+            if ck[field] != state[field]:
+                raise ValueError(
+                    f"seed {seed} arms are not paired on {field}: "
+                    f"expected {state[field]!r}, got {ck[field]!r} for arm {e['arm']}"
+                )
 
     required_arms = set(expected_arms)
     for seed, arms in by_seed.items():
