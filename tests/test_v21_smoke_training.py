@@ -99,7 +99,7 @@ def _one_student_step(mode, critic, initial_state):
     }
 
 
-def test_v21_cpu_smoke_critic_and_four_arms(capsys):
+def test_v21_cpu_smoke_critic_and_four_arms():
     torch.manual_seed(17)
     critic, critic_history = _train_critic()
     base = LightweightSegmenter(width=4)
@@ -114,6 +114,4 @@ def test_v21_cpu_smoke_critic_and_four_arms(capsys):
         "arms": results,
         "canonical_test_opened": False,
     }
-    print("V21_SMOKE_RESULT=" + json.dumps(summary, sort_keys=True))
-    captured = capsys.readouterr().out
-    assert "V21_SMOKE_RESULT=" in captured
+    print("V21_SMOKE_RESULT=" + json.dumps(summary, sort_keys=True), flush=True)
