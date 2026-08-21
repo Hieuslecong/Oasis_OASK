@@ -66,6 +66,8 @@ def main():
     p.add_argument("--student-kind", default="mobilenetv3")
     p.add_argument("--student-width", type=int, default=16)
     args = p.parse_args()
+    if args.student_kind == "mobilenetv3" and int(args.student_width) != 16:
+        raise ValueError("canonical mobilenetv3 requires --student-width 16")
 
     repo_root = Path(__file__).resolve().parents[1]
     head = git_provenance(repo_root)

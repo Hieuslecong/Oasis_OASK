@@ -1,20 +1,19 @@
-# OASIS-RC-v2.1 crack-segmentation research package
+# OASIS-RC-v2.1 crack segmentation
 
-This branch contains the **OASIS-RC-v2.1 development revision**. The reconstructed v2.0.4 code remains historical engineering evidence only; it is not the source of truth for this branch.
+Compact research implementation of **OASIS-RC-v2.1-dev2** for training lightweight RGB-only crack-segmentation models with training-only relational and orientation-aware supervision.
 
 ```text
-experiment_id          = oasis-rc-v2.1-gt-anchored-relational-energy-head
-checkpoint_schema      = 5
 method_version         = OASIS-RC-v2.1
 implementation_version = 2.1.0-dev2
+checkpoint_schema      = 5
+experiment_id          = oasis-rc-v2.1-gt-anchored-relational-energy-head
 ```
 
 Scientific source of truth: `METHOD_SPEC_V2_1.md`  
+Metric contract: `METRIC_SPEC_V2_1.md`  
 Executable protocol: `protocols/real_data_v21.json`
 
-## Scientific question
-
-Can training-only relational and structure-aware supervision improve accuracy, topology-sensitive outcomes and false-positive robustness of lightweight RGB-only crack segmentation without increasing inference complexity?
+## Inference contract
 
 Deployment is always:
 
@@ -22,108 +21,42 @@ Deployment is always:
 RGB -> lightweight student -> crack logits/mask
 ```
 
-The critic, relation-energy head and AOSK are training-only and are forbidden in deployment checkpoints.
+The relation critic, relation-energy head, AOSK and clDice supervision are training-only. Deployment checkpoints must not contain critic/generator/discriminator/AOSK state.
 
-## Canonical arms
+The canonical primary student is MobileNetV3-Small-style with **fixed canonical width metadata `16`**. This implementation does not expose width scaling for MobileNetV3; using any other `student_width` is rejected by canonical initialization/preflight and by deployment-checkpoint validation. Other lightweight backbones retain their explicit width parameter.
+
+## Experimental arms
 
 ```text
 B0  BCE + Dice
-B1  BCE + Dice + clDice
-B2  BCE + Dice + frozen pretrained pair-critic BCE
-S1  BCE + Dice + OASIS-RC-v2.1
-S2  BCE + Dice + AOSK structure-tensor-v2
-S3  BCE + Dice + OASIS-RC-v2.1 + AOSK structure-tensor-v2
+B1  B0 + clDice
+B2  B0 + frozen pretrained pair-critic BCE
+S1  B0 + OASIS-RC-v2.1
+S2  B0 + AOSK structure-tensor-v2
+S3  B0 + OASIS-RC-v2.1 + AOSK structure-tensor-v2
 ```
 
-B2 is an ablation using a frozen pretrained pair critic. It is **not** conventional jointly-trained adversarial training and must not be described as such.
-
-Primary paired contrasts:
-
-```text
-B1 - B0
-B2 - B0
-S1 - B0
-S2 - B0
-S3 - S2
-```
-
-Negative/null effects are valid outcomes and must not be rescued by post-hoc tuning.
-
-## OASIS-RC-v2.1 relation energy
-
-The critic exposes a dedicated scalar energy head. Lower energy means a more compatible RGB-mask relation.
-
-```text
-E_G = E(I, GT)
-E_P = E(I, student prediction)
-E_C = E(I, structured corruption)
-```
-
-Critic calibration includes:
-
-```text
-GT energy anchor
-GT < corruption endpoint ordering
-continuous GT -> corruption path ordering
-```
-
-Student relational supervision uses a GT anchor plus one-sided corruption rejection. GT/corruption energies are detached and the critic is frozen during student optimization.
-
-A connected arm is allowed only after both representation/classification qualification and relation-energy qualification pass. Every v2.1 critic-consuming launch re-measures qualification from the currently loaded weights; a stored PASS flag is provenance, not sole authorization.
-
-## AOSK dev2
-
-Canonical AOSK is `structure-tensor-steered-v2`.
-
-It uses the full 2x2 structure tensor (`Jxx`, `Jyy`, `Jxy`), derives the local tangent orientation and samples logits at `+/- tangent` using differentiable bilinear sampling. Low-coherence areas smoothly fall back to isotropic local consistency.
-
-AOSK is **not a topology loss**. Topology, continuity or junction claims require independent topology metrics and comparison against B1/clDice.
+B2 is a frozen pair-critic ablation, not conventional jointly-trained adversarial learning. Primary paired contrasts are `B1-B0`, `B2-B0`, `S1-B0`, `S2-B0`, and `S3-S2`. Null/negative effects are valid outcomes.
 
 ## Data protocols
 
-### N0
+**N0:** no external normal supervision; certified native-empty rows may remain internal true negatives.
 
-No external normal supervision. Certified native-empty rows from the crack dataset may remain internal true negatives.
+**N25:** external true-normal RGB occupies 25% of the training batch budget. Normal data must be lineage-disjoint across `normal_train`, `normal_val`, and `normal_test`. Critic qualification for N25 uses held-out `normal_val`, never `normal_train` as a fallback.
 
-### N25
-
-External true-normal RGB is used at 25% batch composition. Normal data must be lineage-disjoint across:
-
-```text
-normal_train
-normal_val
-normal_test
-```
-
-N25 critic qualification requires held-out `normal_val`; it may not silently fall back to `normal_train`.
-
-The v2.1 preparation path is:
-
-```text
-canonical manifest
--> clean_manifest.py
--> CleanEval
--> audited external normal source
--> lineage-safe normal split
--> full-benchmark Gate0
--> N0 / N25 training views
--> training-view Gate0 bound to the full certificate
-```
-
-Use:
+Prepare the canonical benchmark and training views with:
 
 ```bash
 export DATA_ROOT=/path/to/data_v21
 export CANONICAL_MANIFEST=/path/to/canonical_manifest.jsonl
 export NORMAL_ROOT=/path/to/true_normal_rgb
 export LINEAGE_REGEX='...'
-export PYTHON=/path/to/python
 bash scripts/prepare_real_data_v21.sh
 ```
 
-The unified preparation script creates both N0 and N25 views. `test` and `normal_test` never enter either training view.
+The preparation path performs cleaning/CleanEval, audited normal splitting, full-benchmark Gate0, and separate N0/N25 training-view Gate0 certificates. Canonical `test` and `normal_test` rows never enter training views.
 
-## Development training
+## Development run
 
 Canonical order:
 
@@ -131,152 +64,57 @@ Canonical order:
 Gate0
 -> CUDA preflight
 -> shared student initialization
--> S0/B0 baseline
+-> B0/S0 baseline
 -> critic training
--> critic representation + energy qualification
+-> representation + relation-energy qualification
 -> trained-S0 RC gradient/energy diagnostic
--> auxiliary-weight development calibration/freeze
+-> freeze auxiliary weights
 -> B0/B1/B2/S1/S2/S3
--> crack-val and normal-val evaluation separately
--> development GO/KILL decision
+-> separate crack-val and normal-val evaluation
 ```
 
-One-command development launcher:
+Main entry point:
 
 ```bash
-export NORMAL_FRACTION=0.0   # or 0.25
+export NORMAL_FRACTION=0.0   # N0, or 0.25 for N25
 export SEED=1337
 export EXP_ROOT=/path/to/experiments/v21/seed1337
 export DATA_ROOT=/path/to/data_v21
 export CANONICAL_MANIFEST=/path/to/canonical_manifest.jsonl
 export NORMAL_ROOT=/path/to/true_normal_rgb
 export LINEAGE_REGEX='...'
-export PYTHON=/path/to/python
 bash scripts/run_training_ready_v21.sh
 ```
 
-`run_training_ready_v21.sh` is development-only. Canonical final-test access remains closed.
+Development critic gates are fail-closed. At minimum: valid-crack recall `>=0.80`, invalid recall `>=0.90`, RGB/mask pair drops `>=0.05`, minimum required-corruption recall `>=0.70`, at least 16 samples per required corruption, positive energy-gap fraction `>=0.70`, continuous path-order fraction `>=0.65`, mean/median energy gap `>0`, at least 16 energy samples, and finite energies. Do not lower gates to obtain a PASS.
 
-## Critic development gates
+## Evaluation and statistics
 
-At minimum:
+Crack-positive rows use precision, recall, Dice, IoU, clDice, skeleton precision/recall and component-excess metrics. True-negative rows are evaluated separately with normal false-positive pixels/components and any-FP rate; crack-overlap metrics are not averaged over empty targets.
 
-```text
-valid_crack_recall                 >= 0.80
-invalid_recall                     >= 0.90
-rgb_pair_drop                      >= 0.05
-mask_pair_drop                     >= 0.05
-min_corruption_invalid_recall      >= 0.70
-samples_per_required_corruption    >= 16
-positive_energy_gap_fraction       >= 0.70
-continuous_path_order_fraction     >= 0.65
-mean_energy_gap                    > 0
-true global median_energy_gap      > 0
-energy_samples                     >= 16
-energy_finite                      = true
-```
-
-Thresholds are development gates and must be frozen before confirmatory runs; never lower them to obtain a PASS.
-
-## Auxiliary-weight discipline
-
-Parser lambdas are development starting points, not confirmatory hyperparameters. dev2 logs both:
+Confirmatory inference uses the training seed as the sampling unit. Canonical confirmatory seeds are:
 
 ```text
-||grad L_aux|| / ||grad L_seg||
-lambda * ramp * ||grad L_aux|| / ||grad L_seg||
-cosine(grad L_seg, grad L_aux)
+2027  31415  42421  51511  62617
 ```
 
-Use development seed 1337 to calibrate auxiliary coefficients under one declared rule, then freeze them. Heterogeneous losses are not required to have identical gradient norms; the telemetry is a strength/stability diagnostic.
+The immutable final bundle requires all six arms for all five seeds, frozen thresholds, exact data/spec/protocol/evaluator hashes, paired initialization/training-view provenance and one frozen Git commit.
 
-## Evaluation
+## Verification policy
 
-Crack-overlap and topology metrics are computed on crack-positive rows only:
+**Testing is local/external; GitHub is source storage only.** No GitHub Actions workflow or repository-resident synthetic smoke harness is required for the research package.
 
-```text
-precision / recall / Dice / IoU
-clDice / skeleton precision / skeleton recall
-component excess
+Before source is stored, run local checks in the execution environment, for example:
+
+```bash
+python -m compileall src scripts tests
+pytest -q
 ```
 
-True-negative rows are evaluated separately:
+Then run an end-to-end smoke on representative train/validation data with the canonical test firewall closed. Smoke evidence is mechanical integration evidence only; it does not establish model efficacy.
 
-```text
-normal FP pixels
-normal FP components
-normal any-FP rate
-```
-
-Do not average Dice/IoU structural zeros over true-negative rows.
-
-## Statistics
-
-Confirmatory uncertainty uses **training seed as the sampling unit**. `scripts/analyze_v21_paired.py` expects an index mapping each arm/seed to its crack and normal evaluation JSONs and reports:
-
-```text
-paired seed deltas
-mean / std / median
-seed-bootstrap 95% CI
-Cohen dz
-direction consistency
-exact paired sign-flip p-value (secondary evidence)
-Holm correction within metric families
-```
-
-Current confirmatory seed set:
-
-```text
-2027
-31415
-42421
-51511
-62617
-```
-
-Seed 1337 is development evidence and is excluded after any tuning.
+For real experiments, `scripts/preflight_v21_real_gpu.py` remains the target-host CUDA/backward gate. Full scientific GO additionally requires the real dataset Gate0 certificates, real critic qualification, trained-S0 diagnostic, frozen development decisions and the complete multi-seed protocol.
 
 ## Final-test firewall
 
-Both of the following are canonical final-test material:
-
-```text
-test
-normal_test
-```
-
-Development evaluators refuse either split. Canonical evaluation is permitted only through `scripts/run_final_bundle_v21.py` after all models, thresholds, metrics, protocol and statistical plan are frozen.
-
-The final bundle requires all six arms for every seed. Its ID is content-addressed rather than path-derived. The final runner requires a stable external `--ledger-root` and evaluates `test` plus `normal_test` under the same single-open marker.
-
-## CI and actual CLI smoke
-
-`OASIS-RC-v2 CI` performs compile, behavioural pytest regression tests, all shell parsing and protocol/version identity checks.
-
-`OASIS-RC-v2.1 Actual Smoke` creates actual PNG/mask files on disk and executes production CLIs for:
-
-```text
-N0:  critic + B0/B1/B2/S1/S2/S3 + crack validation
-N25: critic + B0/B1/B2/S1/S2/S3 + crack validation + normal_val FP evaluation
-```
-
-This is mechanical integration evidence only. It does not establish real-data efficacy.
-
-## Real-data readiness rule
-
-Before a full development experiment is called GO, the target dataset/host must pass:
-
-```text
-real CleanEval + Gate0
-N0/N25 training-view certificates
-CUDA preflight under the same determinism mode as training
-shared initialization
-trained baseline
-critic representation + energy qualification
-trained-S0 gradient/energy diagnostic
-frozen auxiliary-weight development decision
-six-arm development run
-separate crack/normal evaluation
-```
-
-Confirmatory experiments remain NO-GO until all of the above, multi-seed analysis, and the immutable final bundle are frozen and verified.
+`test` and `normal_test` are canonical final-test material. Development trainers/diagnostics/evaluators refuse them. Canonical final evaluation is permitted only through `scripts/run_final_bundle_v21.py` after all models, thresholds, metrics and statistical decisions are frozen. Until then, the final test remains **CLOSED**.

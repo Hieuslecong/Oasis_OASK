@@ -52,7 +52,7 @@ def critic_compatibility_contract(saved):
     """Return the scientific compatibility subset recorded by a qualified critic.
 
     Optimizer history (lr, epochs, Adam settings, etc.) is provenance, not a
-    requirement on a later student run.  This helper deliberately exposes only
+    requirement on a later student run. This helper deliberately exposes only
     the contract that a v2.1 critic consumer must opt in to.
     """
     actual = saved.get("training_hparams", {})
@@ -72,27 +72,12 @@ def validate_critic_checkpoint(
     expected_hparams=None,
     full_gate0_certificate=None,
 ):
-    """Validate a critic for use by a v2.1 consumer.
-
-    A consumer must explicitly declare the complete v2.1 scientific contract.
-    Historical optimizer settings are intentionally not compared.  Connected
-    training still re-runs qualification from the loaded weights, while this
-    validator prevents stale/legacy callers from treating a schema-5 critic as
-    sufficient based on identity strings alone.
-    """
+    """Validate a critic for use by a v2.1 consumer."""
     _require_identity(saved, "critic")
     required = (
-        "critic",
-        "config",
-        "manifest_file_sha256",
-        "dataset_content_sha256",
-        "normal_fraction",
-        "normal_critic_weight",
-        "training_hparams",
-        "width",
-        "seed",
-        "full_gate0_certificate_sha256",
-        "energy_head_contract",
+        "critic", "config", "manifest_file_sha256", "dataset_content_sha256",
+        "normal_fraction", "normal_critic_weight", "training_hparams", "width",
+        "seed", "full_gate0_certificate_sha256", "energy_head_contract",
         "qualification_v21",
     )
     missing = [k for k in required if k not in saved]
@@ -103,15 +88,11 @@ def validate_critic_checkpoint(
     qualification = saved.get("qualification_v21")
     if not isinstance(qualification, dict) or qualification.get("pass") is not True:
         raise ValueError("critic checkpoint is not v2.1-qualified")
-    failures = qualification.get("failures", [])
-    if failures:
+    if qualification.get("failures", []):
         raise ValueError("critic checkpoint qualification contains failures")
     if saved["manifest_file_sha256"] != sha256_file(manifest):
         raise ValueError("critic checkpoint manifest SHA256 does not match current training manifest")
-    if (
-        dataset_content_sha256_value is not None
-        and saved["dataset_content_sha256"] != dataset_content_sha256_value
-    ):
+    if dataset_content_sha256_value is not None and saved["dataset_content_sha256"] != dataset_content_sha256_value:
         raise ValueError("critic checkpoint dataset-content SHA256 does not match current data")
     if not full_gate0_certificate:
         raise ValueError("critic validation requires full Gate 0 certificate")
@@ -126,15 +107,11 @@ def validate_critic_checkpoint(
         raise ValueError("critic checkpoint normal_fraction does not match current run")
     if not _same_number(saved["normal_critic_weight"], normal_critic_weight):
         raise ValueError("critic checkpoint normal_critic_weight does not match current run")
-
     if expected_hparams is None:
         raise ValueError("v2.1 critic consumer must declare expected scientific hparams")
     missing_expected = [key for key in CRITIC_COMPATIBILITY_KEYS if key not in expected_hparams]
     if missing_expected:
-        raise ValueError(
-            "critic consumer does not declare full v2.1 contract: "
-            + ", ".join(missing_expected)
-        )
+        raise ValueError("critic consumer does not declare full v2.1 contract: " + ", ".join(missing_expected))
     actual = saved.get("training_hparams", {})
     for key in CRITIC_COMPATIBILITY_KEYS:
         if key not in actual:
@@ -154,45 +131,28 @@ def validate_student_checkpoint(saved):
     if forbidden:
         raise ValueError(f"deployment checkpoint contains training-only state: {sorted(forbidden)}")
     required = (
-        "student",
-        "student_kind",
-        "student_width",
-        "seed",
-        "mode",
-        "effective_config",
-        "threshold_validation",
-        "manifest_file_sha256",
-        "dataset_content_sha256",
-        "training_view_dataset_sha256",
-        "gate0_certificate_sha256",
-        "full_gate0_certificate_sha256",
-        "student_init_sha256",
-        "inference_contract",
+        "student", "student_kind", "student_width", "seed", "mode",
+        "effective_config", "threshold_validation", "manifest_file_sha256",
+        "dataset_content_sha256", "training_view_dataset_sha256",
+        "gate0_certificate_sha256", "full_gate0_certificate_sha256",
+        "student_init_sha256", "inference_contract",
     )
     missing = [k for k in required if k not in saved]
     if missing:
         raise ValueError("student checkpoint missing: " + ", ".join(missing))
     if saved["student_kind"] not in {
-        "multiscale",
-        "lightweight",
-        "mobilenetv3",
-        "dsunet",
-        "fastscnn",
-        "bisenet",
+        "multiscale", "lightweight", "mobilenetv3", "dsunet", "fastscnn", "bisenet",
     }:
         raise ValueError("student checkpoint has unknown student_kind")
+    if saved["student_kind"] == "mobilenetv3" and int(saved["student_width"]) != 16:
+        raise ValueError("canonical mobilenetv3 student_width must be 16")
     threshold = float(saved["threshold_validation"])
     if not 0.0 < threshold < 1.0:
         raise ValueError("student checkpoint threshold_validation must be in (0,1)")
     if saved["dataset_content_sha256"] != saved["training_view_dataset_sha256"]:
         raise ValueError("student checkpoint training-view dataset hash mismatch")
     if saved["mode"] not in {
-        "control",
-        "connected",
-        "aosk",
-        "aosk_connected",
-        "cldice",
-        "adversarial",
+        "control", "connected", "aosk", "aosk_connected", "cldice", "adversarial",
     }:
         raise ValueError("student checkpoint mode is invalid")
     effective = saved["effective_config"]
