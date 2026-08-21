@@ -1,4 +1,9 @@
-"""Validation/final-test evaluation for RGB-only OASIS-RC v2 checkpoints."""
+"""Validation/final-test evaluation for RGB-only OASIS-RC checkpoints.
+
+This module retains the reconstructed v2.0.4 single-checkpoint ``test``
+authorization path.  OASIS-RC-v2.1 final evaluation, including
+``normal_test``, must use the immutable multi-checkpoint bundle runner.
+"""
 import argparse
 import json
 from pathlib import Path
@@ -18,6 +23,8 @@ from .models import (
     MobileNetV3SmallSegmenter,
     MultiScaleLightweightSegmenter,
 )
+
+FINAL_SPLITS = {"test", "normal_test"}
 
 
 @torch.no_grad()
@@ -73,6 +80,22 @@ def manifest_splits(path):
     }
 
 
+def _validate_split_access(manifest, requested_split):
+    splits = manifest_splits(manifest)
+    if requested_split == "normal_test":
+        raise ValueError("canonical normal_test must use the v2.1 final bundle runner")
+    if requested_split != "test":
+        leaked = sorted(FINAL_SPLITS.intersection(splits))
+        if leaked:
+            raise ValueError(
+                "non-final evaluator refuses manifests containing canonical final rows: "
+                + ", ".join(leaked)
+            )
+    if requested_split not in splits:
+        raise ValueError(f"requested split {requested_split!r} is absent from manifest")
+    return splits
+
+
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--checkpoint", required=True)
@@ -86,13 +109,7 @@ def main():
     p.add_argument("--final-test-authorization", default=None)
     a = p.parse_args()
 
-    splits = manifest_splits(a.manifest)
-    if a.split != "test" and "test" in splits:
-        raise ValueError(
-            "non-test evaluator refuses manifests containing canonical test rows"
-        )
-    if a.split not in splits:
-        raise ValueError(f"requested split {a.split!r} is absent from manifest")
+    _validate_split_access(a.manifest, a.split)
 
     device = torch.device(a.device)
     if device.type == "cuda" and not torch.cuda.is_available():
