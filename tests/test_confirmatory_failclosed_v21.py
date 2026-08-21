@@ -62,9 +62,36 @@ def _bundle_fixture(tmp_path, seeds):
     return path
 
 
-def test_final_bundle_rejects_missing_preregistered_seed(tmp_path, monkeypatch):
+def _install_bundle_mocks(monkeypatch, mode_override=None, init_override=None):
     monkeypatch.setattr(final_bundle, "sha256_file", lambda path: "ok")
     monkeypatch.setattr(final_bundle, "dataset_content_sha256", lambda path: "data")
+    monkeypatch.setattr(final_bundle, "validate_student_checkpoint", lambda ck: None)
+
+    def fake_load(path, **kwargs):
+        stem = Path(path).stem
+        arm, seed_text = stem.split("_", 1)
+        seed = int(seed_text)
+        mode = final_bundle.ARM_TO_MODE[arm]
+        if mode_override and arm in mode_override:
+            mode = mode_override[arm]
+        init = f"init-{seed}"
+        if init_override and arm in init_override:
+            init = init_override[arm]
+        return {
+            "seed": seed,
+            "mode": mode,
+            "threshold_validation": 0.5,
+            "full_gate0_certificate_sha256": "ok",
+            "student_init_sha256": init,
+            "training_view_dataset_sha256": f"train-{seed}",
+            "gate0_certificate_sha256": f"gate-{seed}",
+        }
+
+    monkeypatch.setattr(final_bundle.torch, "load", fake_load)
+
+
+def test_final_bundle_rejects_missing_preregistered_seed(tmp_path, monkeypatch):
+    _install_bundle_mocks(monkeypatch)
     missing_one = final_bundle.CANONICAL_CONFIRMATORY_SEEDS[:-1]
     path = _bundle_fixture(tmp_path, missing_one)
     with pytest.raises(ValueError, match="confirmatory seed mismatch"):
@@ -72,12 +99,25 @@ def test_final_bundle_rejects_missing_preregistered_seed(tmp_path, monkeypatch):
 
 
 def test_final_bundle_accepts_exact_preregistered_seed_set(tmp_path, monkeypatch):
-    monkeypatch.setattr(final_bundle, "sha256_file", lambda path: "ok")
-    monkeypatch.setattr(final_bundle, "dataset_content_sha256", lambda path: "data")
+    _install_bundle_mocks(monkeypatch)
     path = _bundle_fixture(tmp_path, final_bundle.CANONICAL_CONFIRMATORY_SEEDS)
     validated = final_bundle.validate_final_bundle(path)
     assert validated["seeds"] == sorted(final_bundle.CANONICAL_CONFIRMATORY_SEEDS)
     assert len(validated["entries"]) == 30
+
+
+def test_final_bundle_rejects_arm_mode_relabeling(tmp_path, monkeypatch):
+    _install_bundle_mocks(monkeypatch, mode_override={"S3": "control"})
+    path = _bundle_fixture(tmp_path, final_bundle.CANONICAL_CONFIRMATORY_SEEDS)
+    with pytest.raises(ValueError, match="arm/checkpoint mode mismatch"):
+        final_bundle.validate_final_bundle(path)
+
+
+def test_final_bundle_rejects_unpaired_initialization(tmp_path, monkeypatch):
+    _install_bundle_mocks(monkeypatch, init_override={"S2": "different-init"})
+    path = _bundle_fixture(tmp_path, final_bundle.CANONICAL_CONFIRMATORY_SEEDS)
+    with pytest.raises(ValueError, match="not paired on student_init_sha256"):
+        final_bundle.validate_final_bundle(path)
 
 
 def _write_eval(path, normal=False, drop_metric=None):
