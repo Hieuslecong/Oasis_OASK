@@ -1,4 +1,7 @@
+import importlib.util
+import json
 import math
+from pathlib import Path
 
 import pytest
 import torch
@@ -13,7 +16,7 @@ from oasis_rc_v2.checkpoint import (
     sha256_file,
     validate_critic_checkpoint,
 )
-from oasis_rc_v2.final_bundle import canonical_bundle_id
+from oasis_rc_v2.final_bundle import CANONICAL_ARMS, canonical_bundle_id
 from oasis_rc_v2.protocol import _verify_normal_policy
 
 
@@ -26,7 +29,6 @@ def _ridge(angle_deg, size=65, sigma=1.5):
     )
     x = x - (size - 1) / 2
     y = y - (size - 1) / 2
-    # Tangent=(cos,sin); normal=(-sin,cos).
     normal_coord = -math.sin(angle) * x + math.cos(angle) * y
     ridge = torch.exp(-0.5 * (normal_coord / sigma).square())
     return ridge[None, None].repeat(1, 3, 1, 1)
@@ -38,8 +40,6 @@ def test_structure_tensor_tracks_arbitrary_crack_angles(angle):
     tx, ty, coherence = structure_tensor_tangent(image, window=7)
     true_x = math.cos(math.radians(angle))
     true_y = math.sin(math.radians(angle))
-    # Ignore the outer border and weight by orientation confidence. Direction
-    # has a 180-degree ambiguity, therefore compare |dot|.
     sl = (slice(None), slice(None), slice(8, -8), slice(8, -8))
     dot = (tx[sl] * true_x + ty[sl] * true_y).abs()
     weight = coherence[sl]
@@ -65,11 +65,14 @@ def test_n25_accepts_stronger_train_and_aux_val_policy():
     with pytest.raises(ValueError):
         _verify_normal_policy("none", "train_and_aux_val", splits)
     with pytest.raises(ValueError):
-        _verify_normal_policy("train", "train_and_aux_val", {"train", "val", "normal_train"})
+        _verify_normal_policy(
+            "train", "train_and_aux_val", {"train", "val", "normal_train"}
+        )
 
 
-def test_both_canonical_splits_are_firewalled():
+def test_both_canonical_splits_are_firewalled_and_bundle_requires_six_arms():
     assert FINAL_SPLITS == {"test", "normal_test"}
+    assert CANONICAL_ARMS == ("B0", "B1", "B2", "S1", "S2", "S3")
 
 
 def test_empty_target_does_not_create_fake_zero_dice():
@@ -152,7 +155,9 @@ def test_critic_validator_requires_qualification_and_full_consumer_contract(tmp_
             0.0,
             1.0,
             full_gate0_certificate=full,
-            expected_hparams={"energy_head_contract": "dedicated-scalar-lower-is-better-v1"},
+            expected_hparams={
+                "energy_head_contract": "dedicated-scalar-lower-is-better-v1"
+            },
         )
 
     bad = {**saved, "qualification_v21": {"pass": False, "failures": ["energy"]}}
@@ -166,3 +171,57 @@ def test_critic_validator_requires_qualification_and_full_consumer_contract(tmp_
             full_gate0_certificate=full,
             expected_hparams=saved["training_hparams"],
         )
+
+
+def _load_stats_script():
+    path = Path(__file__).resolve().parents[1] / "scripts" / "analyze_v21_paired.py"
+    spec = importlib.util.spec_from_file_location("analyze_v21_paired_dev2", path)
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_confirmatory_stats_use_seed_pairs_and_all_declared_contrasts(tmp_path):
+    stats = _load_stats_script()
+    seeds = [2027, 31415, 42421, 51511, 62617]
+    arms = {arm: {} for arm in CANONICAL_ARMS}
+    effect = {"B0": 0.0, "B1": 0.02, "B2": 0.01, "S1": 0.03, "S2": 0.015, "S3": 0.04}
+    for arm in CANONICAL_ARMS:
+        for i, seed in enumerate(seeds):
+            crack = tmp_path / f"{arm}_{seed}_crack.json"
+            normal = tmp_path / f"{arm}_{seed}_normal.json"
+            delta = effect[arm] + i * 0.0001
+            crack.write_text(
+                json.dumps(
+                    {
+                        "crack_image_count": 10,
+                        "normal_image_count": 0,
+                        "dice": 0.70 + delta,
+                        "iou": 0.55 + delta,
+                        "cldice": 0.75 + delta,
+                        "mean_component_excess": 2.0 - delta,
+                    }
+                )
+            )
+            normal.write_text(
+                json.dumps(
+                    {
+                        "crack_image_count": 0,
+                        "normal_image_count": 10,
+                        "normal_any_fp_rate": 0.20 - delta,
+                        "normal_fp_pixels_mean": 8.0 - delta,
+                        "normal_fp_components_mean": 1.5 - delta,
+                    }
+                )
+            )
+            arms[arm][str(seed)] = {"crack": str(crack), "normal": str(normal)}
+
+    result = stats.analyze({"seeds": seeds, "arms": arms}, bootstrap_reps=1000)
+    assert result["sampling_unit"] == "training_seed"
+    assert set(result["contrasts"]) == {"B1-B0", "B2-B0", "S1-B0", "S2-B0", "S3-S2"}
+    for contrast in result["contrasts"].values():
+        assert contrast["metrics"]["dice"]["n_seeds"] == 5
+        assert contrast["metrics"]["dice"]["mean_delta"] > 0
+        assert contrast["metrics"]["normal_any_fp_rate"]["mean_delta"] > 0
+        assert "holm_p_within_family" in contrast["metrics"]["dice"]
