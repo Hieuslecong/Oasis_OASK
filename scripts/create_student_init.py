@@ -22,11 +22,27 @@ def sha256_file(path):
     return h.hexdigest()
 
 
-def git_head():
+def git_provenance(repo_root):
     try:
-        return subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
-    except Exception:
-        return None
+        head = subprocess.check_output(
+            ["git", "-C", str(repo_root), "rev-parse", "HEAD"],
+            text=True,
+            stderr=subprocess.STDOUT,
+        ).strip()
+        status = subprocess.check_output(
+            ["git", "-C", str(repo_root), "status", "--porcelain"],
+            text=True,
+            stderr=subprocess.STDOUT,
+        ).strip()
+    except Exception as exc:
+        raise RuntimeError("shared initialization requires readable git provenance") from exc
+    if len(head) != 40:
+        raise RuntimeError(f"invalid git HEAD {head!r}")
+    if status:
+        raise RuntimeError(
+            "shared initialization requires a clean git worktree; commit/freeze changes first"
+        )
+    return head
 
 
 def main():
@@ -37,6 +53,8 @@ def main():
     p.add_argument("--student-width", type=int, default=16)
     args = p.parse_args()
 
+    repo_root = Path(__file__).resolve().parents[1]
+    head = git_provenance(repo_root)
     random.seed(args.seed)
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
@@ -48,7 +66,8 @@ def main():
         "student_width": args.student_width,
         "seed": args.seed,
         "torch_version": torch.__version__,
-        "git_head": git_head(),
+        "git_head": head,
+        "git_dirty": False,
     }
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
