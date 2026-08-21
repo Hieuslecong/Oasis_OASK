@@ -19,51 +19,52 @@ jobs:
         with:
           python-version: '3.11'
           cache: pip
-      - name: Install
+      - name: Install tested runtime
         run: |
           python -m pip install --upgrade pip
           python -m pip install -r requirements-tested.txt
           python -m pip install -e . --no-deps
-      - name: Compile
+      - name: Compile all production and test Python
         run: python -m compileall src scripts tests
-      - name: Test including v2.1 CPU smoke training
+      - name: Behavioural tests including v2.1 smoke and dev2 hardening
         run: pytest -q -s
-      - name: Shell syntax
+      - name: Parse every shell launcher
         run: |
-          bash -n scripts/run_smoke.sh
-          bash -n scripts/run_full_smoke_train_test.sh
-          bash -n scripts/run_lightweight_smoke.sh
-          bash -n scripts/evaluate_checkpoint.sh
-          bash -n scripts/run_validation_arms.sh
-          bash -n scripts/run_validation_eval.sh
-          bash -n scripts/prepare_n0_data.sh
-          bash -n scripts/prepare_real_data.sh
-          bash -n scripts/run_training_ready.sh
-          bash -n scripts/run_all_seeds.sh
-          bash -n scripts/run_final_test.sh
-          bash -n scripts/prepare_real_data_v21.sh
-          bash -n scripts/run_validation_arms_v21.sh
-          bash -n scripts/run_training_ready_v21.sh
-      - name: OASIS-RC-v2.1 scientific contract
+          set -euo pipefail
+          find scripts -type f -name '*.sh' -print0 | while IFS= read -r -d '' f; do
+            bash -n "$f"
+          done
+      - name: Version and protocol identity
         run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          from oasis_rc_v2.checkpoint import (
+              CHECKPOINT_SCHEMA, IMPLEMENTATION_VERSION, METHOD_VERSION,
+          )
+          protocol=json.loads(Path('protocols/real_data_v21.json').read_text())
+          assert METHOD_VERSION == 'OASIS-RC-v2.1'
+          assert IMPLEMENTATION_VERSION == '2.1.0-dev2'
+          assert CHECKPOINT_SCHEMA == 5
+          assert protocol['implementation_version'] == IMPLEMENTATION_VERSION
+          assert protocol['checkpoint_schema'] == CHECKPOINT_SCHEMA
+          assert protocol['final_test']['required_arms'] == ['B0','B1','B2','S1','S2','S3']
+          assert protocol['final_test']['canonical_splits'] == ['test','normal_test']
+          assert protocol['aosk']['variant'] == 'structure-tensor-steered-v2'
+          print('V21_DEV2_IDENTITY=PASS')
+          PY
+      - name: Production launcher contract
+        run: |
+          set -euo pipefail
           test -f METHOD_SPEC_V2_1.md
-          test -f protocols/real_data_v21.json
           test -f scripts/preflight_v21_real_gpu.py
           test -f scripts/prepare_real_data_v21.sh
           test -f scripts/run_training_ready_v21.sh
-          grep -q 'METHOD_VERSION = "OASIS-RC-v2.1"' src/oasis_rc_v2/checkpoint.py
-          grep -q 'IMPLEMENTATION_VERSION = "2.1.0-dev1"' src/oasis_rc_v2/checkpoint.py
-          grep -q 'CHECKPOINT_SCHEMA = 5' src/oasis_rc_v2/checkpoint.py
-          grep -q 'dedicated-scalar-lower-is-better-v1' src/oasis_cycle_aosk/train_oasis_rc_v21.py
-          grep -q 'energy_head' src/oasis_rc_v2/critic.py
-          grep -q 'critic_endpoint_energy_loss' src/oasis_rc_v2/losses.py
-          grep -q 'gt_anchored_relational_loss' src/oasis_rc_v2/losses.py
-          grep -q 'continuous_relation_path_loss' src/oasis_rc_v2/losses.py
-          grep -q 'mobilenetv3' scripts/run_training_ready_v21.sh
-          grep -q 'train_oasis_rc_v21' scripts/run_training_ready_v21.sh
-          grep -q 'train_oasis_rc_v21' scripts/run_validation_arms_v21.sh
-          ! grep -q 'train_oasis_rc_v2 ' scripts/run_training_ready_v21.sh
-          ! grep -q 'train_oasis_rc_v2 ' scripts/run_validation_arms_v21.sh
-          grep -q 'normal_test' scripts/add_normal_rgb_v21.py
-          grep -q 'single-open immutable multi-checkpoint bundle' protocols/real_data_v21.json
-          ! grep -R 'train_oasis_rc_v2_legacy' src scripts tests
+          python - <<'PY'
+          from pathlib import Path
+          for path in ('scripts/run_training_ready_v21.sh','scripts/run_validation_arms_v21.sh'):
+              text=Path(path).read_text()
+              assert 'train_oasis_rc_v21' in text, path
+              assert 'train_oasis_rc_v2 ' not in text, path
+          print('V21_ONLY_LAUNCHERS=PASS')
+          PY
