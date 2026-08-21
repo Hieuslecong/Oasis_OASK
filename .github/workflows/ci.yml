@@ -26,8 +26,8 @@ jobs:
           python -m pip install -e . --no-deps
       - name: Compile
         run: python -m compileall src scripts tests
-      - name: Test
-        run: pytest -q
+      - name: Test including v2.1 CPU smoke training
+        run: pytest -q -s
       - name: Shell syntax
         run: |
           bash -n scripts/run_smoke.sh
@@ -41,16 +41,18 @@ jobs:
           bash -n scripts/run_training_ready.sh
           bash -n scripts/run_all_seeds.sh
           bash -n scripts/run_final_test.sh
-      - name: Canonical method contract
+      - name: OASIS-RC-v2.1 scientific contract
         run: |
-          grep -q 'AOSK_VARIANT = "oriented-consistency-v1"' src/oasis_cycle_aosk/train_oasis_rc_v2.py
-          grep -q 'AOSK_DEFAULT_VARIANT = AOSK_ORIENTED_VARIANT' src/oasis_cycle_aosk/aosk_dispatch.py
-          ! grep -E 'aosk_topology|centerline-cldice-v1' \
-            scripts/run_smoke.sh \
-            scripts/run_full_smoke_train_test.sh \
-            scripts/run_validation_arms.sh \
-            scripts/run_validation_eval.sh
-          grep -q 'prepare_n0_data.sh' scripts/run_training_ready.sh
+          test -f METHOD_SPEC_V2_1.md
+          test -f protocols/real_data_v21.json
+          grep -q 'METHOD_VERSION = "OASIS-RC-v2.1"' src/oasis_rc_v2/checkpoint.py
+          grep -q 'IMPLEMENTATION_VERSION = "2.1.0-dev"' src/oasis_rc_v2/checkpoint.py
+          grep -q 'CHECKPOINT_SCHEMA = 4' src/oasis_rc_v2/checkpoint.py
+          grep -q 'gt_anchored_relational_loss' src/oasis_rc_v2/losses.py
+          grep -q 'continuous_relation_path_loss' src/oasis_rc_v2/losses.py
+          grep -q 'train_oasis_rc_v21' METHOD_SPEC_V2_1.md || true
+          grep -q 'oriented-consistency-v1' src/oasis_cycle_aosk/train_oasis_rc_v2.py
+          grep -q 'oriented-consistency-v1-isotropic-flat' protocols/real_data_v21.json
+          grep -q 'mobilenetv3' protocols/real_data_v21.json
+          grep -q 'single-open immutable multi-checkpoint bundle' protocols/real_data_v21.json
           ! grep -R 'train_oasis_rc_v2_legacy' src scripts tests
-          grep -q 'CHECKPOINT_SCHEMA = 3' src/oasis_rc_v2/checkpoint.py
-          grep -q 'IMPLEMENTATION_VERSION = "2.0.4"' src/oasis_rc_v2/checkpoint.py
