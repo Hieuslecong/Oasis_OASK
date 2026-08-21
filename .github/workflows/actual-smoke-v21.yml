@@ -4,11 +4,13 @@ on:
   pull_request:
     paths:
       - 'src/**'
-      - 'scripts/run_actual_smoke_v21.py'
-      - 'scripts/create_student_init.py'
+      - 'scripts/**'
+      - 'tests/**'
+      - 'protocols/**'
+      - 'METHOD_SPEC_V2_1.md'
       - 'pyproject.toml'
       - 'requirements-tested.txt'
-      - '.github/workflows/actual-smoke-v21.yml'
+      - '.github/**'
   workflow_dispatch:
 
 concurrency:
@@ -18,7 +20,7 @@ concurrency:
 jobs:
   actual-cli-smoke:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -32,7 +34,7 @@ jobs:
           python -m pip install -e . --no-deps
       - name: Compile actual smoke harness
         run: python -m py_compile scripts/run_actual_smoke_v21.py
-      - name: Actual CLI smoke train and evaluate
+      - name: Actual CLI smoke N0 and N25, all six arms
         run: |
           python scripts/run_actual_smoke_v21.py \
             --out actual_smoke_v21 \
@@ -41,7 +43,9 @@ jobs:
             --image-size 64 \
             --train-samples 48 \
             --val-samples 24 \
-            --holdout-samples 8
+            --holdout-samples 8 \
+            --normal-train-samples 24 \
+            --normal-val-samples 16
       - name: Assert smoke summary
         run: |
           python - <<'PY'
@@ -50,22 +54,28 @@ jobs:
           p=Path('actual_smoke_v21/ACTUAL_SMOKE_SUMMARY.json')
           r=json.loads(p.read_text())
           assert r['status']=='PASS', r
-          assert r['kind']=='actual-cli-integration-smoke'
+          assert r['kind']=='actual-cli-integration-smoke-dev2'
+          assert r['implementation']=='OASIS-RC-v2.1-dev2'
           assert r['canonical_test_opened'] is False
           assert r['canonical_test_created'] is False
-          assert set(r['arms']) == {'S0','S1','S2','S3'}
-          assert r['critic_qualification']['pass'] is True
-          for arm in ('S0','S1','S2','S3'):
-              x=r['arms'][arm]
-              for key in ('dice','iou','threshold'):
-                  assert isinstance(x[key], (int,float))
+          assert r['synthetic_smoke_holdout_evaluated'] is False
+          assert set(r['protocols']) == {'N0','N25'}
+          expected={'B0','B1','B2','S1','S2','S3'}
+          for protocol in ('N0','N25'):
+              x=r['protocols'][protocol]
+              assert x['critic_qualification']['pass'] is True
+              assert set(x['arms']) == expected
+              for arm in expected:
+                  for key in ('dice','iou','threshold'):
+                      assert isinstance(x['arms'][arm][key], (int,float))
+          assert r['protocols']['N25']['critic_qualification']['normal_split']=='normal_val'
           print(json.dumps(r, indent=2))
           PY
       - name: Upload actual smoke evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: actual-smoke-v21-${{ github.run_attempt }}
+          name: actual-smoke-v21-dev2-${{ github.run_attempt }}
           path: actual_smoke_v21/
           if-no-files-found: warn
           retention-days: 14
