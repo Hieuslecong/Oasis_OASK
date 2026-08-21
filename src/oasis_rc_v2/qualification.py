@@ -51,12 +51,10 @@ def critic_gate_failures(metrics):
             int(metrics.get("normal_samples", 0)) > 0,
         )
     )
-
     for key, threshold in BASE_MINIMUMS.items():
         value = metrics.get(key)
         if value is None or float(value) < threshold:
             failures.append(f"{key}>={threshold:.2f}")
-
     if normal_expected:
         for key, threshold in NORMAL_MINIMUMS.items():
             value = metrics.get(key)
@@ -68,14 +66,12 @@ def critic_gate_failures(metrics):
                 failures.append(f"{key}<={threshold:.2f}")
         if int(metrics.get("normal_samples", 0)) <= 0:
             failures.append("normal_samples>0")
-
     if int(metrics.get("rgb_pair_samples", 0)) <= 0:
         failures.append("rgb_pair_samples>0")
     if int(metrics.get("mask_pair_samples", 0)) <= 0:
         failures.append("mask_pair_samples>0")
     if int(metrics.get("valid_crack_predictions", 0)) <= 0:
         failures.append("no_background_only_collapse")
-
     per_kind = metrics.get("corruption_invalid_recall", {})
     per_kind_samples = metrics.get("corruption_samples", {})
     required_corruptions = list(BASE_CORRUPTIONS)
@@ -94,27 +90,18 @@ def critic_gate_passes(metrics):
 
 
 def relation_energy_gate_failures(metrics):
-    """v2.1 usability gate for the relation-energy landscape.
-
-    This gate deliberately does not substitute for student-gradient diagnostics.
-    It establishes that the critic orders GT, continuous soft corruption paths,
-    and structured corruptions in a direction compatible with the v2.1 loss.
-    Gradient norm/alignment remains a required pre-confirmatory diagnostic.
-    """
+    """v2.1 usability gate for the relation-energy landscape."""
     failures = []
     if int(metrics.get("energy_samples", 0)) < ENERGY_MIN_SAMPLES:
         failures.append(f"energy_samples>={ENERGY_MIN_SAMPLES}")
-
     for key, threshold in ENERGY_DEV_MINIMUMS.items():
         value = metrics.get(key)
         if value is None or float(value) < threshold:
             failures.append(f"{key}>={threshold:.2f}")
-
     for key in ENERGY_DEV_POSITIVE:
         value = metrics.get(key)
         if value is None or float(value) <= 0.0:
             failures.append(f"{key}>0")
-
     if metrics.get("energy_finite") is not True:
         failures.append("energy_finite=true")
     return failures
@@ -124,11 +111,35 @@ def relation_energy_gate_passes(metrics):
     return not relation_energy_gate_failures(metrics)
 
 
-def connected_gate_failures(representation_metrics, energy_metrics):
-    return critic_gate_failures(representation_metrics) + relation_energy_gate_failures(
-        energy_metrics
+def connected_gate_failures(
+    representation_metrics=None,
+    energy_metrics=None,
+    require_classification=True,
+):
+    """Combined fail-closed gate.
+
+    Development smoke may set ``require_classification=False`` to isolate the
+    continuous-energy contract, but official connected-arm qualification must
+    supply both metric dictionaries and keep the default True.
+    """
+    failures = []
+    if require_classification:
+        if representation_metrics is None:
+            failures.append("classification_metrics_required")
+        else:
+            failures.extend(critic_gate_failures(representation_metrics))
+    if energy_metrics is None:
+        failures.append("energy_metrics_required")
+    else:
+        failures.extend(relation_energy_gate_failures(energy_metrics))
+    return failures
+
+
+def connected_gate_passes(
+    representation_metrics=None,
+    energy_metrics=None,
+    require_classification=True,
+):
+    return not connected_gate_failures(
+        representation_metrics, energy_metrics, require_classification=require_classification
     )
-
-
-def connected_gate_passes(representation_metrics, energy_metrics):
-    return not connected_gate_failures(representation_metrics, energy_metrics)
