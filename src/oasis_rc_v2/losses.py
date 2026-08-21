@@ -14,7 +14,7 @@ def segmentation_loss(logits, target):
 
 
 def valid_crack_dice_loss(crack_logit, semantic_target, pair_valid, eps=1e-6):
-    """Dice on valid crack pairs only, exactly the canonical v2 auxiliary term."""
+    """Dice on valid crack pairs only, exactly the canonical auxiliary term."""
     valid = pair_valid.view(-1, 1, 1, 1)
     target = (semantic_target == 1).float().unsqueeze(1)
     positive_sample = (target.flatten(1).sum(1) > 0).float().view(-1, 1, 1, 1)
@@ -58,7 +58,7 @@ def oasis_rc_critic_loss(
     mismatch_weight=1.0,
     pair_weight=0.25,
 ):
-    """Canonical critic objective with pair-only RGB-shuffle supervision."""
+    """Critic objective retained from the reconstructed v2 lineage."""
     rgb_shuffle_only = bool(
         pair_valid.numel() > 0
         and torch.all(pair_valid.detach() <= 0.5)
@@ -106,9 +106,38 @@ def oasis_rc_critic_loss(
 
 
 def relation_energy(out, pair_weight=0.25):
+    """Lower means the critic considers the RGB-mask relation more compatible."""
     mismatch = out["mismatch"].sigmoid().mean((1, 2, 3))
     invalid_pair = 1.0 - out["pair"].sigmoid().squeeze(1)
     return mismatch + float(pair_weight) * invalid_pair
+
+
+def gt_anchored_relational_loss(
+    e_pred,
+    e_gt,
+    e_corrupted,
+    margin=0.10,
+    corrupted_rank_weight=1.0,
+):
+    """Canonical OASIS-RC-v2.1 relational objective.
+
+    The student is anchored to the GT relation energy while a one-sided hinge
+    rejects energies that are not sufficiently better than a structured
+    corruption. GT and corrupted energies are detached by contract.
+
+    If e_pred == e_gt and e_gt + margin <= e_corrupted, the relational
+    component is exactly zero (up to floating point precision), so a perfect
+    GT-energy prediction is never repelled merely to sit at a midpoint.
+    """
+    e_gt = e_gt.detach()
+    e_corrupted = e_corrupted.detach()
+    anchor = F.smooth_l1_loss(e_pred, e_gt, reduction="mean")
+    reject = F.relu(e_pred - e_corrupted + float(margin)).mean()
+    total = anchor + float(corrupted_rank_weight) * reject
+    return total, {
+        "anchor": anchor,
+        "reject_corrupted": reject,
+    }
 
 
 def relational_ranking_loss(
@@ -118,22 +147,14 @@ def relational_ranking_loss(
     margin=0.10,
     corrupted_rank_weight=1.0,
 ):
-    """Rank prediction energy strictly between GT and corrupted energies.
-
-    Lower energy denotes a better RGB-mask relation. Gradient descent therefore
-    increases an overly-low prediction energy and decreases an overly-high one.
-    """
-    e_gt = e_gt.detach()
-    e_corrupted = e_corrupted.detach()
-    rank_gt = F.softplus(e_gt - e_pred + float(margin)).mean()
-    rank_corrupted = F.softplus(
-        e_pred - e_corrupted + float(margin)
-    ).mean()
-    total = rank_gt + float(corrupted_rank_weight) * rank_corrupted
-    return total, {
-        "rank_gt": rank_gt,
-        "rank_corrupted": rank_corrupted,
-    }
+    """Compatibility alias for v2.1; use gt_anchored_relational_loss in new code."""
+    return gt_anchored_relational_loss(
+        e_pred,
+        e_gt,
+        e_corrupted,
+        margin=margin,
+        corrupted_rank_weight=corrupted_rank_weight,
+    )
 
 
 def oasis_rc_student_loss_v2(
@@ -145,32 +166,36 @@ def oasis_rc_student_loss_v2(
     margin=0.10,
     pair_weight=0.25,
     corrupted_rank_weight=1.0,
+    fp_weight=1.0,
 ):
+    """Canonical v2.1 student auxiliary loss; function name retained for API stability."""
     e_pred = relation_energy(pred_out, pair_weight)
     e_gt = relation_energy(gt_out, pair_weight).detach()
     e_corrupted = relation_energy(corrupted_out, pair_weight).detach()
-    ranking, ranking_terms = relational_ranking_loss(
+
+    relation, relation_terms = gt_anchored_relational_loss(
         e_pred,
         e_gt,
         e_corrupted,
         margin=margin,
         corrupted_rank_weight=corrupted_rank_weight,
     )
-    rank_gt = ranking_terms["rank_gt"]
-    rank_corrupted = ranking_terms["rank_corrupted"]
+
     q_pred = pred_out["mismatch"].sigmoid()
-    fp = (((1.0 - target) * student_mask * q_pred).sum() /
-          ((1.0 - target).sum().clamp_min(1.0)))
-    total = ranking + fp
-    energy_gap = e_corrupted.detach() - e_gt
-    margin_feasibility_gap = energy_gap - 2.0 * float(margin)
-    ordered = (
-        (e_gt + float(margin) < e_pred.detach())
-        & (e_pred.detach() < e_corrupted.detach() - float(margin))
+    fp = (
+        ((1.0 - target) * student_mask * q_pred).sum()
+        / ((1.0 - target).sum().clamp_min(1.0))
     )
+    total = relation + float(fp_weight) * fp
+
+    energy_gap = e_corrupted.detach() - e_gt
+    anchor_abs_gap = (e_pred.detach() - e_gt).abs()
+    reject_violation = e_pred.detach() - e_corrupted.detach() + float(margin)
+    separated = e_pred.detach() + float(margin) <= e_corrupted.detach()
+
     return total, {
-        "rank_gt": rank_gt.detach(),
-        "rank_corrupted": rank_corrupted.detach(),
+        "anchor": relation_terms["anchor"].detach(),
+        "reject_corrupted": relation_terms["reject_corrupted"].detach(),
         "fp": fp.detach(),
         "background_fp_penalty": fp.detach(),
         "e_pred": e_pred.detach().mean(),
@@ -179,6 +204,7 @@ def oasis_rc_student_loss_v2(
         "delta_pred_gt": (e_pred.detach() - e_gt).mean(),
         "delta_pred_corrupted": (e_pred.detach() - e_corrupted).mean(),
         "energy_gap": energy_gap.mean(),
-        "margin_feasibility_gap": margin_feasibility_gap.mean(),
-        "ordered_fraction": ordered.float().mean(),
+        "anchor_abs_gap": anchor_abs_gap.mean(),
+        "reject_violation": reject_violation.mean(),
+        "separated_fraction": separated.float().mean(),
     }
