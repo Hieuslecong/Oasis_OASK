@@ -1,9 +1,10 @@
 {
-  "schema": "oasis-rc-v2.1-protocol-v3",
+  "schema": "oasis-rc-v2.1-protocol-v4",
   "method_version": "OASIS-RC-v2.1",
   "implementation_version": "2.1.0-dev2",
   "checkpoint_schema": 5,
   "method_spec": "METHOD_SPEC_V2_1.md",
+  "metric_spec": "METRIC_SPEC_V2_1.md",
   "status": "development-not-confirmatory",
   "primary_backbone": "mobilenetv3",
   "secondary_backbones": ["dsunet", "fastscnn", "multiscale"],
@@ -101,6 +102,7 @@
   "statistics": {
     "development_seed": 1337,
     "confirmatory_primary_seeds": [2027, 31415, 42421, 51511, 62617],
+    "confirmatory_seed_set_must_be_exact": true,
     "secondary_backbone_min_seeds": 3,
     "paired_by_seed_and_initialization": true,
     "sampling_unit": "training_seed",
@@ -110,9 +112,11 @@
     "holm_correction_within_metric_family": true,
     "report_effect_size_cohen_dz": true,
     "report_mean_std_median_direction_consistency": true,
+    "all_preregistered_metrics_complete_and_finite_for_every_seed": true,
     "development_seed_excluded_from_confirmatory_if_any_tuning_occurs": true
   },
   "evaluation": {
+    "metric_spec": "METRIC_SPEC_V2_1.md",
     "crack_population_pixel": ["precision", "recall", "dice", "iou"],
     "crack_population_per_image": ["dice", "iou"],
     "structure_on_crack_rows": ["cldice", "skeleton_precision", "skeleton_recall", "component_excess"],
@@ -122,13 +126,20 @@
     "save_per_image_predictions_before_final_close": true
   },
   "final_test": {
-    "policy": "single-open immutable six-arm multi-seed bundle",
+    "policy": "single-open immutable six-arm five-seed bundle",
     "canonical_splits": ["test", "normal_test"],
     "development_evaluators_must_refuse_both_canonical_splits": true,
     "content_addressed_bundle_id": true,
     "stable_external_ledger_root_required": true,
     "canonical_test_must_remain_closed_during_development": true,
     "required_arms": ["B0", "B1", "B2", "S1", "S2", "S3"],
+    "required_confirmatory_seeds": [2027, 31415, 42421, 51511, 62617],
+    "required_checkpoint_count": 30,
+    "checkpoint_arm_mode_binding_required": true,
+    "shared_student_initialization_per_seed_required": true,
+    "shared_training_view_and_gate0_per_seed_required": true,
+    "checkpoint_runtime_git_sha_must_equal_frozen_git_commit_sha": true,
+    "metric_spec_path_and_sha256_required": true,
     "bind": [
       "dataset_content_sha256",
       "manifest_sha256",
