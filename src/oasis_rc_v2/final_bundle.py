@@ -9,6 +9,7 @@ from .checkpoint import sha256_file
 from .protocol import dataset_content_sha256
 
 CANONICAL_ARMS = ("B0", "B1", "B2", "S1", "S2", "S3")
+CANONICAL_CONFIRMATORY_SEEDS = (2027, 31415, 42421, 51511, 62617)
 REQUIRED_TOP = {
     "schema",
     "manifest",
@@ -32,7 +33,7 @@ REQUIRED_ENTRY = {"arm", "seed", "checkpoint", "checkpoint_sha256", "threshold"}
 def _content_identity_payload(bundle):
     """Return a relocation-invariant final-test identity.
 
-    Paths are deliberately excluded.  Exact content hashes, frozen thresholds,
+    Paths are deliberately excluded. Exact content hashes, frozen thresholds,
     arm/seed identities and the frozen git commit define the opening namespace.
     """
     entries = sorted(
@@ -71,7 +72,18 @@ def canonical_bundle_id(bundle):
     return hashlib.sha256(raw).hexdigest()
 
 
-def validate_final_bundle(bundle_path, expected_arms=CANONICAL_ARMS):
+def validate_final_bundle(
+    bundle_path,
+    expected_arms=CANONICAL_ARMS,
+    expected_seeds=CANONICAL_CONFIRMATORY_SEEDS,
+):
+    """Validate the one-shot confirmatory bundle fail-closed.
+
+    By default the final bundle must contain exactly the preregistered five
+    confirmatory seeds and all six canonical arms for every seed. Development
+    utilities may override ``expected_seeds`` explicitly, but the canonical
+    final runner intentionally uses the default contract.
+    """
     p = Path(bundle_path)
     b = json.loads(p.read_text())
     missing = sorted(REQUIRED_TOP - set(b))
@@ -119,11 +131,24 @@ def validate_final_bundle(bundle_path, expected_arms=CANONICAL_ARMS):
         if not 0 < t < 1:
             raise ValueError(f"invalid threshold {key}")
 
-    required = set(expected_arms)
+    required_arms = set(expected_arms)
     for seed, arms in by_seed.items():
-        if arms != required:
+        if arms != required_arms:
             raise ValueError(f"seed {seed} incomplete arms: {sorted(arms)}")
+
+    actual_seeds = tuple(sorted(by_seed))
+    if expected_seeds is not None:
+        required_seeds = tuple(sorted(int(s) for s in expected_seeds))
+        if actual_seeds != required_seeds:
+            missing_seeds = sorted(set(required_seeds) - set(actual_seeds))
+            extra_seeds = sorted(set(actual_seeds) - set(required_seeds))
+            raise ValueError(
+                "final bundle confirmatory seed mismatch; "
+                f"missing={missing_seeds}, extra={extra_seeds}, "
+                f"required={list(required_seeds)}"
+            )
+
     actual_id = canonical_bundle_id(b)
     if b.get("bundle_id") not in (None, actual_id):
         raise ValueError("bundle_id mismatch")
-    return {**b, "bundle_id": actual_id, "seeds": sorted(by_seed)}
+    return {**b, "bundle_id": actual_id, "seeds": list(actual_seeds)}
