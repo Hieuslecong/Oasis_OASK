@@ -2,17 +2,15 @@
 """Confirmatory paired statistics for frozen OASIS-RC-v2.1 results.
 
 The sampling unit for method uncertainty is the training seed, not an image
-inside one trained checkpoint.  Input is an immutable result index mapping each
-arm and seed to a crack-evaluation JSON and, when available, a normal-evaluation
-JSON.  Image-level rows remain available in those files for descriptive/error
-analysis but are not treated as independent training replicates here.
+inside one trained checkpoint. Input is an immutable result index mapping each
+arm and seed to a crack-evaluation JSON and a normal-evaluation JSON.
+Image-level rows remain available in those files for descriptive/error analysis
+but are not treated as independent training replicates here.
 """
 from __future__ import annotations
 
 import argparse
-import itertools
 import json
-import math
 from pathlib import Path
 
 import numpy as np
@@ -62,12 +60,13 @@ def _metric_from_record(record, metric):
     population = "normal" if metric.startswith("normal_") else "crack"
     path = record.get(population)
     if not path:
-        return None
+        raise ValueError(
+            f"confirmatory record missing required {population} evaluation for metric {metric}"
+        )
     data = _validate_eval(path, population)
-    value = data.get(metric)
-    if value is None:
-        return None
-    return float(value)
+    if metric not in data or data.get(metric) is None:
+        raise ValueError(f"{path}: missing required confirmatory metric {metric!r}")
+    return float(data[metric])
 
 
 def _bootstrap_seed_mean(delta, seed=20260821, reps=20000):
@@ -160,6 +159,8 @@ def analyze(index, bootstrap_reps):
         declared_seeds = sorted(common or [])
     if len(declared_seeds) < 2:
         raise ValueError("paired seed analysis requires at least two complete seeds")
+    if len(set(declared_seeds)) != len(declared_seeds):
+        raise ValueError("declared seeds contain duplicates")
 
     results = {}
     p_by_family = {family: [] for family in METRICS}
@@ -178,15 +179,23 @@ def analyze(index, bootstrap_reps):
                         )
                     b = _metric_from_record(base, metric)
                     t = _metric_from_record(treat, metric)
-                    if b is None or t is None:
-                        continue
-                    # Positive delta always means improvement.
                     delta = b - t if metric in LOWER_IS_BETTER else t - b
+                    if not np.isfinite(delta):
+                        raise ValueError(
+                            f"non-finite paired delta for {contrast}, metric={metric}, seed={seed}"
+                        )
                     deltas.append(delta)
                     used_seeds.append(seed)
+                if used_seeds != declared_seeds:
+                    raise RuntimeError(
+                        f"internal pairing error for {contrast}, metric={metric}: "
+                        f"used={used_seeds}, declared={declared_seeds}"
+                    )
                 summary = _summarize(deltas, used_seeds, bootstrap_reps)
-                if summary is None:
-                    continue
+                if summary is None or summary["n_seeds"] != len(declared_seeds):
+                    raise RuntimeError(
+                        f"confirmatory metric lost seed pairs: {contrast}/{metric}"
+                    )
                 summary["family"] = family
                 summary["higher_delta_means"] = "treatment_better"
                 c["metrics"][metric] = summary
@@ -216,6 +225,10 @@ def analyze(index, bootstrap_reps):
         "population_rule": (
             "accuracy/topology from crack evaluation only; robustness from normal "
             "evaluation only; never average crack overlap metrics over true-negative rows"
+        ),
+        "complete_case_rule": (
+            "Every preregistered metric must exist and be finite for every declared paired seed; "
+            "missing metrics fail closed rather than reducing n post hoc"
         ),
         "warning": (
             None
