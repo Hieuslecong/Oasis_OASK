@@ -27,7 +27,13 @@ def _batch():
     y[2, 0, 7:25, 10:12] = 1
     y[2, 0, 15:17, 10:24] = 1
     y[3, 0, 8:24, 20:22] = 1
-    wrong = y.flip(-1)
+    # A non-wrapping three-pixel translation guarantees every toy corruption
+    # differs from GT. Horizontal flip was invalid here because symmetric crack
+    # rows could remain unchanged and artificially cap the endpoint gap rate.
+    wrong = torch.zeros_like(y)
+    wrong[..., 3:] = y[..., :-3]
+    changed = (wrong - y).abs().flatten(1).sum(1) > 0
+    assert bool(changed.all())
     return x, y, wrong
 
 
@@ -59,6 +65,7 @@ def _train_critic():
         critic, x, y, wrong, pair_weight=0.25,
         levels=(0.0,0.25,0.5,0.75,1.0), margin=0.01,
     )
+    print("V21_ENERGY_DEBUG=" + json.dumps(metrics, sort_keys=True), flush=True)
     assert metrics["energy_finite"] is True
     assert metrics["positive_energy_gap_fraction"] >= 0.75
     assert metrics["mean_energy_gap"] > 0
