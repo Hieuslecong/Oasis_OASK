@@ -27,15 +27,8 @@ def _batch():
     y[2, 0, 7:25, 10:12] = 1
     y[2, 0, 15:17, 10:24] = 1
     y[3, 0, 8:24, 20:22] = 1
-
-    # The smoke must contain a learnable RGB-mask relation. Earlier random RGB
-    # was independent of GT, so energy ordering could fail for the right reason:
-    # there was no visual evidence identifying the valid mask. Here the crack is
-    # rendered as a bright image structure plus deterministic low-amplitude noise.
     x = torch.rand((4, 3, 32, 32), generator=g) * 0.10 - 0.05
     x = (x + y.repeat(1, 3, 1, 1) * 0.90).clamp(-1, 1)
-
-    # Non-wrapping translation guarantees every corruption differs from GT.
     wrong = torch.zeros_like(y)
     wrong[..., 3:] = y[..., :-3]
     changed = (wrong - y).abs().flatten(1).sum(1) > 0
@@ -53,7 +46,9 @@ def _train_critic():
     critic = OASISRCv2Critic(width=4)
     opt = torch.optim.AdamW(critic.parameters(), lr=3e-3, weight_decay=0.0)
     history = []
-    for _ in range(48):
+    # Keep the release gate fixed; give the tiny CPU critic enough optimization
+    # steps to prove capacity to learn the ordered soft-mask landscape.
+    for _ in range(96):
         clean = _critic_term(critic, x, y, torch.zeros_like(y))
         corrupt = _critic_term(critic, x, wrong, (wrong-y).abs())
         semantic, mismatch, pair = build_targets(y, torch.zeros_like(y))
