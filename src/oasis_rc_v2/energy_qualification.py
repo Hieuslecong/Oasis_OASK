@@ -35,10 +35,16 @@ def relation_energy_trajectory(
     return torch.stack(values, dim=1)
 
 
-def summarize_energy_trajectories(energies):
-    """Summarize [N,T] trajectories for v2.1 energy qualification."""
+def summarize_energy_trajectories(energies, t_values=DEFAULT_TRAJECTORY_T, margin=0.0):
+    """Summarize [N,T] trajectories for v2.1 energy qualification.
+
+    ``continuous_path_order_fraction`` uses the same margin-per-unit-t contract
+    as critic path calibration when a non-zero margin is supplied.
+    """
     if energies.ndim != 2 or energies.shape[1] < 2:
         raise ValueError("energies must have shape [N,T] with T>=2")
+    if len(t_values) != energies.shape[1]:
+        raise ValueError("t_values length must match trajectory width")
     if energies.shape[0] == 0:
         return {
             "energy_samples": 0,
@@ -48,12 +54,14 @@ def summarize_energy_trajectories(energies):
             "median_energy_gap": None,
             "continuous_path_order_fraction": None,
         }
-
     finite = bool(torch.isfinite(energies).all().item())
     gap = energies[:, -1] - energies[:, 0]
-    adjacent = energies[:, 1:] >= energies[:, :-1]
+    orders = []
+    for i, (t0, t1) in enumerate(zip(t_values, t_values[1:])):
+        required = float(margin) * float(t1 - t0)
+        orders.append(energies[:, i] + required <= energies[:, i + 1])
+    adjacent = torch.stack(orders, dim=1)
     strict_endpoint = gap > 0
-
     return {
         "energy_samples": int(energies.shape[0]),
         "energy_finite": finite,
@@ -64,12 +72,30 @@ def summarize_energy_trajectories(energies):
     }
 
 
-def gradient_diagnostics(seg_grad, rc_grad, eps=1e-12):
-    """Compute norm ratio and cosine for flattened student gradients.
+@torch.no_grad()
+def summarize_energy_trajectory(
+    critic,
+    image,
+    gt_mask,
+    corrupted_mask,
+    pair_weight=0.25,
+    levels=DEFAULT_TRAJECTORY_T,
+    margin=0.0,
+):
+    """Convenience wrapper used by real-data qualification and smoke tests."""
+    energies = relation_energy_trajectory(
+        critic,
+        image,
+        gt_mask,
+        corrupted_mask,
+        pair_weight=pair_weight,
+        t_values=levels,
+    )
+    return summarize_energy_trajectories(energies, t_values=levels, margin=margin)
 
-    This utility is intentionally model-agnostic so the diagnostic script can
-    aggregate arbitrary student parameter gradients without changing the method.
-    """
+
+def gradient_diagnostics(seg_grad, rc_grad, eps=1e-12):
+    """Compute norm ratio and cosine for flattened student gradients."""
     seg_grad = seg_grad.reshape(-1)
     rc_grad = rc_grad.reshape(-1)
     if seg_grad.numel() != rc_grad.numel():
@@ -88,4 +114,18 @@ def gradient_diagnostics(seg_grad, rc_grad, eps=1e-12):
             and math.isfinite(float(rc_norm))
             and math.isfinite(float(cosine))
         ),
+    }
+
+
+def gradient_alignment_diagnostics(seg_loss, aux_loss, variable):
+    """Differentiate two scalar losses with respect to the same student variable."""
+    seg = torch.autograd.grad(seg_loss, variable, retain_graph=True, allow_unused=False)[0]
+    aux = torch.autograd.grad(aux_loss, variable, retain_graph=True, allow_unused=False)[0]
+    base = gradient_diagnostics(seg.detach(), aux.detach())
+    return {
+        "seg_grad_norm": base["seg_grad_norm"],
+        "aux_grad_norm": base["rc_grad_norm"],
+        "aux_to_seg_norm_ratio": base["rc_to_seg_grad_norm_ratio"],
+        "cosine_similarity": base["seg_rc_grad_cosine"],
+        "finite": base["gradient_finite"],
     }
