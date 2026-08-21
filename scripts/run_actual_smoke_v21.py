@@ -85,11 +85,29 @@ def make_crack_case(root, index, split, size, rng):
 
 
 def make_normal_case(root, index, split, size, rng):
-    image = _background(size, 10000 + index, rng)
-    # Add non-crack texture structures so normals are not trivial flat images.
+    image = _background(size, 10000 + index, rng).astype(np.float32)
     yy, xx = np.mgrid[0:size, 0:size]
-    wave = (8.0 * np.sin((xx + 2 * yy + index) / 7.0))[..., None]
-    image = np.clip(image.astype(np.float32) + wave, 0, 180).astype(np.uint8)
+
+    # Mechanical smoke data must itself satisfy the production cross-split
+    # perceptual-duplicate firewall. Random high-frequency noise alone can have
+    # near-identical dHash/mean-RGB signatures, so give each synthetic normal
+    # split a deterministic low-frequency appearance regime. This is smoke-only
+    # data generation; production Gate0 thresholds and real-data policy are not
+    # relaxed. The within-split index phase still keeps individual rows distinct.
+    split_luminance = {
+        "normal_train": 0.0,
+        "normal_val": 48.0,
+        "normal_test": 96.0,
+    }.get(split, 0.0)
+    phase = 0.0 if split == "normal_train" else (1.7 if split == "normal_val" else 3.1)
+    wave = 8.0 * np.sin((xx + 2 * yy + index) / 7.0 + phase)
+    coarse = 6.0 * (((xx // 8 + yy // 8 + index) % 2) * 2.0 - 1.0)
+    image = np.clip(
+        image + split_luminance + wave[..., None] + coarse[..., None],
+        0,
+        235,
+    ).astype(np.uint8)
+
     path = root / "images" / f"{split}_{index:04d}.png"
     Image.fromarray(image, mode="RGB").save(path)
     return {
