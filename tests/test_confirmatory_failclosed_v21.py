@@ -53,7 +53,8 @@ def _bundle_fixture(tmp_path, seeds):
         "protocol_sha256": "ok",
         "evaluator": str(tmp_path / "eval.py"),
         "evaluator_sha256": "ok",
-        "metric_spec_sha256": "metric",
+        "metric_spec": str(tmp_path / "metric.md"),
+        "metric_spec_sha256": "ok",
         "git_commit_sha": "c" * 40,
         "entries": entries,
     }
@@ -62,7 +63,12 @@ def _bundle_fixture(tmp_path, seeds):
     return path
 
 
-def _install_bundle_mocks(monkeypatch, mode_override=None, init_override=None):
+def _install_bundle_mocks(
+    monkeypatch,
+    mode_override=None,
+    init_override=None,
+    git_override=None,
+):
     monkeypatch.setattr(final_bundle, "sha256_file", lambda path: "ok")
     monkeypatch.setattr(final_bundle, "dataset_content_sha256", lambda path: "data")
     monkeypatch.setattr(final_bundle, "validate_student_checkpoint", lambda ck: None)
@@ -77,6 +83,9 @@ def _install_bundle_mocks(monkeypatch, mode_override=None, init_override=None):
         init = f"init-{seed}"
         if init_override and arm in init_override:
             init = init_override[arm]
+        git_sha = "c" * 40
+        if git_override and arm in git_override:
+            git_sha = git_override[arm]
         return {
             "seed": seed,
             "mode": mode,
@@ -85,6 +94,7 @@ def _install_bundle_mocks(monkeypatch, mode_override=None, init_override=None):
             "student_init_sha256": init,
             "training_view_dataset_sha256": f"train-{seed}",
             "gate0_certificate_sha256": f"gate-{seed}",
+            "runtime": {"git_sha": git_sha},
         }
 
     monkeypatch.setattr(final_bundle.torch, "load", fake_load)
@@ -117,6 +127,13 @@ def test_final_bundle_rejects_unpaired_initialization(tmp_path, monkeypatch):
     _install_bundle_mocks(monkeypatch, init_override={"S2": "different-init"})
     path = _bundle_fixture(tmp_path, final_bundle.CANONICAL_CONFIRMATORY_SEEDS)
     with pytest.raises(ValueError, match="not paired on student_init_sha256"):
+        final_bundle.validate_final_bundle(path)
+
+
+def test_final_bundle_rejects_checkpoint_from_different_git_commit(tmp_path, monkeypatch):
+    _install_bundle_mocks(monkeypatch, git_override={"B2": "d" * 40})
+    path = _bundle_fixture(tmp_path, final_bundle.CANONICAL_CONFIRMATORY_SEEDS)
+    with pytest.raises(ValueError, match="git commit mismatch"):
         final_bundle.validate_final_bundle(path)
 
 
