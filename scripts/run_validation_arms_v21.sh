@@ -29,7 +29,8 @@ done
 
 run_arm() {
   local name="$1" mode="$2"; shift 2
-  local out="$ARM_ROOT/$name"; mkdir -p "$out"
+  local out="$ARM_ROOT/$name"
+  mkdir -p "$out"
   "$PYTHON" -m oasis_cycle_aosk.train_oasis_rc_v21 \
     --config "$CONFIG" --manifest "$MANIFEST" \
     --gate0-certificate "$GATE0_CERTIFICATE" --full-gate0-certificate "$FULL_GATE0_CERTIFICATE" \
@@ -39,12 +40,21 @@ run_arm() {
     --student-init-checkpoint "$STUDENT_INIT" "$@" 2>&1 | tee "$out/train.log"
 }
 
-# S0 may already exist because it is required for RC diagnostics.
-if [ ! -f "$ARM_ROOT/B0_S0/student_only.pt" ]; then run_arm B0_S0 control; fi
+# B0 may already exist because run_training_ready_v21.sh trains it first for the
+# S0-manifold diagnostic. Reuse is allowed only when that parent launcher has
+# explicitly provided the same checkpoint path; standalone runs retrain B0.
+B0_DIR="${B0_DIR:-$ARM_ROOT/B0}"
+if [ "${REUSE_VALIDATED_B0:-0}" = "1" ] && [ -f "$B0_DIR/student_only.pt" ]; then
+  printf 'REUSE_VALIDATED_B0=%s\n' "$B0_DIR/student_only.pt"
+else
+  run_arm B0 control
+fi
 run_arm B1_cldice cldice --lambda-cldice "${LAMBDA_CLDICE:-0.1}"
-run_arm B2_adversarial adversarial --lambda-adversarial "${LAMBDA_ADVERSARIAL:-0.001}" --critic-checkpoint "$CRITIC"
+# Internal mode name 'adversarial' is retained for checkpoint compatibility;
+# scientifically this arm is a frozen pretrained pair-critic ablation.
+run_arm B2_frozen_pair adversarial --lambda-adversarial "${LAMBDA_FROZEN_PAIR:-${LAMBDA_ADVERSARIAL:-0.001}}" --critic-checkpoint "$CRITIC"
 run_arm S1_rc connected --lambda-oasis "${LAMBDA_OASIS:-0.001}" --critic-checkpoint "$CRITIC"
 run_arm S2_aosk aosk --lambda-aosk "${LAMBDA_AOSK:-0.01}"
 run_arm S3_rc_aosk aosk_connected --lambda-oasis "${LAMBDA_OASIS:-0.001}" --lambda-aosk "${LAMBDA_AOSK:-0.01}" --critic-checkpoint "$CRITIC"
 
-printf 'V21_DEVELOPMENT_ARMS_DONE\nSTUDENT_KIND=%s\nNORMAL_FRACTION=%s\nTEST_FIREWALL=CLOSED\n' "$STUDENT_KIND" "$NORMAL_FRACTION"
+printf 'V21_DEVELOPMENT_ARMS_DONE\nSTUDENT_KIND=%s\nNORMAL_FRACTION=%s\nB2_SEMANTICS=frozen-pretrained-pair-critic\nTEST_FIREWALL=CLOSED\n' "$STUDENT_KIND" "$NORMAL_FRACTION"
