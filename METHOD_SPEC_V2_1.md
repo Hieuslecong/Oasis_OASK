@@ -1,6 +1,6 @@
 # OASIS-RC-v2.1 Method Specification
 
-Status: **scientific revision / pre-confirmatory**
+Status: **scientific revision / development / pre-confirmatory**
 
 This document is the source of truth for OASIS-RC-v2.1. The historical/reconstructed v2.0.4 formulation remains immutable evidence and must not be described as bit-for-bit historical OASIS-RC-v2.
 
@@ -18,7 +18,7 @@ The relation critic and AOSK are training-only. They must not be serialized into
 
 ## 3. Canonical relation energy
 
-OASIS-RC-v2.1 uses a **dedicated scalar relation-energy head** in the training-only critic. The classification/mismatch/pair heads remain representation supervision, but they no longer define the scientific energy implicitly.
+OASIS-RC-v2.1 uses a **dedicated scalar relation-energy head** in the training-only critic. The classification/mismatch/pair heads remain representation supervision, but they do not define the scientific energy implicitly.
 
 For critic output `out`:
 
@@ -39,8 +39,6 @@ For image `I`, ground truth `G`, student soft prediction `P`, and structured cor
 The critic has two roles that are trained and qualified separately.
 
 ### 4.1 Representation/classification supervision
-
-The reconstructed representation contract is retained:
 
 `L_repr = 0.5 * (L_clean + L_corrupt) + lambda_rgb * L_rgb_pair + lambda_normal * L_normal_donor`.
 
@@ -92,6 +90,8 @@ Canonical student loss:
 
 `L_student = L_seg + lambda_RC * L_RC + lambda_AOSK * L_AOSK`.
 
+`L_anchor` is intentionally an anchor, not a monotonic preference for arbitrarily low energy: if `E_P < E_G`, the symmetric SmoothL1 term pulls the prediction back toward the GT relation energy.
+
 ### Required invariants
 
 1. If `E_P == E_G` and `E_G + margin_student <= E_C`, the relational ranking component must be zero and must not repel the prediction from GT.
@@ -99,55 +99,93 @@ Canonical student loss:
 3. `E_G` and `E_C` must be detached for student updates.
 4. Critic parameters must receive no gradient during student updates.
 5. Connected arms are forbidden unless both critic representation qualification and relation-energy usability qualification pass.
-6. Critic checkpoints without the dedicated energy-head contract are incompatible with v2.1-dev1.
+6. Critic consumers must declare the complete v2.1 scientific compatibility contract; historical optimizer settings are provenance rather than student-run compatibility requirements.
+7. Every v2.1 critic-consuming launch must re-run qualification from the currently loaded critic weights. A stored `qualification_v21.pass` is provenance, not sole authorization.
+8. Legacy v2.0.4 entrypoints must not be capable of creating v2.1 connected-arm evidence.
 
-## 6. Critic calibration and qualification requirement
+## 6. Critic calibration and qualification
 
 A binary valid/invalid classifier is not sufficient evidence that the critic provides a useful student loss. Before connected real-data training, v2.1 must qualify the energy landscape on held-out validation trajectories.
 
 At minimum the report must include:
 
 - positive GT-to-corruption energy-gap fraction;
-- median/mean `E_C - E_G`;
+- the **true global** median and mean `E_C - E_G` across validation samples;
 - continuous-path monotonicity/order;
 - soft student-prediction energy distribution;
 - relational gradient norm;
-- ratio of relational to segmentation gradient norms;
+- raw relational/segmentation gradient ratio;
+- `lambda_RC * ramp * relational/segmentation gradient ratio`;
 - cosine similarity between relational and segmentation gradients;
 - saturation/finiteness diagnostics.
 
 Development thresholds are frozen before confirmatory runs. Canonical test data must not be used to set them.
 
-## 7. AOSK claim boundary
+For N25, critic qualification must use `normal_val`; falling back to the normal training rows is not admissible.
 
-Canonical AOSK is an image-guided orientation-aware local consistency regularizer. It is **not** itself a topology loss. Topology-preservation claims require independent topology metrics and comparison against a strong topology-aware baseline such as clDice.
+## 7. Auxiliary-weight calibration
 
-Flat/low-texture regions must use an isotropic fallback or disable orientation preference when local orientation evidence is insufficient.
+Parser defaults are development starting points, not confirmatory evidence. Before confirmatory seeds, each auxiliary coefficient must be calibrated using the development seed only under one declared rule and then frozen.
 
-## 8. Experimental claims
+The repository must log both raw and lambda-weighted gradient contribution. Gradient magnitude is a sanity/strength diagnostic, not a requirement that heterogeneous objectives have identical norms. Calibration must consider at least effective gradient contribution, validation response, instability/non-finiteness, and degradation of the primary segmentation objective. No coefficient may be changed after confirmatory runs begin.
 
-Minimum paired arms:
+## 8. AOSK v2 claim boundary
 
-- S0/B0: segmentation control
-- B1: segmentation + clDice
-- B2: segmentation + conventional pair-adversarial supervision
-- S1: segmentation + RC-v2.1
-- S2: segmentation + AOSK
-- S3: segmentation + RC-v2.1 + AOSK
+Canonical dev2 AOSK is `structure-tensor-steered-v2`:
 
-The incremental RC claim requires `S1 > S0` and, for the combined model, `S3 > S2` under preregistered metrics. Tiny or inconsistent effects must be reported as null/negative rather than rescued by post-hoc tuning.
+- local RGB gradients form the 2x2 structure tensor using `Jxx`, `Jyy`, and the cross-term `Jxy`;
+- the principal gradient-normal orientation is converted to a tangent direction;
+- logits are sampled at `+/- tangent` using differentiable bilinear sampling;
+- low-coherence regions smoothly fall back to isotropic local consistency.
 
-## 9. Development versus confirmatory evidence
+This supports arbitrary local angles rather than only horizontal/vertical preference. AOSK remains **a training-only local-consistency regularizer, not a topology loss**. Topology/continuity/junction claims require independent topology metrics and comparison against a topology-aware baseline such as clDice.
 
-Any seed inspected before changing method or hyperparameters is development evidence. Once development evidence is used to tune the method, it must not be counted as an independent confirmatory seed.
+## 9. Experimental arms and claim semantics
 
-No canonical final-test access is permitted before the method, effective configuration, evaluator, metrics, checkpoints, thresholds, and multi-arm evaluation bundle are frozen and hashed.
+Canonical arm identifiers are:
 
-## 10. Version identity
+- B0: BCE + Dice segmentation control
+- B1: B0 + clDice
+- B2: B0 + **frozen pretrained pair-critic BCE**; this is an ablation and must not be called conventional jointly-trained adversarial training
+- S1: B0 + OASIS-RC-v2.1
+- S2: B0 + AOSK structure-tensor-v2
+- S3: B0 + OASIS-RC-v2.1 + AOSK structure-tensor-v2
+
+If a conventional adversarial baseline is required for a paper claim, it must be implemented as a separate discriminator with its own jointly/alternately optimized parameters; B2 is not that baseline.
+
+Primary preregistered contrasts are:
+
+- `B1 - B0`
+- `B2 - B0`
+- `S1 - B0`
+- `S2 - B0`
+- `S3 - S2`
+
+Tiny or inconsistent effects must be reported as null/negative rather than rescued by post-hoc tuning.
+
+## 10. Data protocols and final-test firewall
+
+N0 excludes external true-normal supervision. Certified native-empty rows belonging to the crack dataset may remain internal true negatives.
+
+N25 uses a fixed 25% normal batch-composition protocol with lineage-disjoint `normal_train`, `normal_val`, and `normal_test`. A `train_and_aux_val` Gate0 certificate is strictly stronger than `train`; N0 accepts `none` only.
+
+Both `test` and `normal_test` are canonical final-test material. Development trainers, diagnostics, and evaluators must refuse either split. The immutable final-bundle runner is the sole sanctioned route and must evaluate both splits under one content-addressed single-open ledger marker.
+
+## 11. Evaluation and statistics
+
+Accuracy and topology metrics are computed on crack-positive rows. True-negative rows are evaluated with dedicated false-positive metrics; crack-overlap metrics must never be averaged over true-negative rows.
+
+Confirmatory uncertainty uses **training seed as the sampling unit**. Image rows within one trained checkpoint are not independent training replicates. The frozen analysis must report seed-level paired deltas, confidence intervals, effect sizes, direction consistency, and multiplicity-controlled secondary tests for all preregistered contrasts. With very small seed counts, p-values are discrete and remain secondary evidence.
+
+Development seed 1337 is excluded from confirmatory evidence after any tuning. Canonical confirmatory seeds are declared in `protocols/real_data_v21.json`.
+
+## 12. Version identity
 
 - Method: `OASIS-RC-v2.1`
-- Implementation: `2.1.0-dev1`
+- Implementation: `2.1.0-dev2`
 - Checkpoint schema: `5`
 - Experiment family: `oasis-rc-v2.1-gt-anchored-relational-energy-head`
 
-A future confirmatory release must replace the development implementation version only after the relation-energy usability gate, real-data training pipeline, evaluation protocol, and final-test bundle are complete.
+`dev2` is a hardening revision: it keeps the OASIS-RC relation-energy hypothesis while strengthening N25 contracts, critic authorization, arbitrary-angle AOSK, evaluation separation, final-test control, gradient instrumentation, and confirmatory statistics.
+
+A future confirmatory release must replace the development implementation version only after real-data N0/N25 execution, lambda calibration/freeze, all six arms, evaluation protocol, statistical plan, and the final-test bundle are frozen and verified.
