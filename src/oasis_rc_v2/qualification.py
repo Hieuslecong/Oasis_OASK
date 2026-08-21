@@ -115,13 +115,22 @@ def connected_gate_failures(
     representation_metrics=None,
     energy_metrics=None,
     require_classification=True,
+    classification_metrics=None,
 ):
     """Combined fail-closed gate.
 
-    Development smoke may set ``require_classification=False`` to isolate the
-    continuous-energy contract, but official connected-arm qualification must
-    supply both metric dictionaries and keep the default True.
+    Official qualification supplies representation and energy dictionaries.
+    A development smoke may explicitly disable the representation gate to
+    isolate continuous-energy mechanics; this is never sufficient evidence for
+    confirmatory runs.
     """
+    if classification_metrics is not None:
+        representation_metrics = classification_metrics
+    if not require_classification and energy_metrics is None:
+        # Compatibility for the development runner call where the energy metrics
+        # are the first positional argument.
+        energy_metrics = representation_metrics
+        representation_metrics = None
     failures = []
     if require_classification:
         if representation_metrics is None:
@@ -139,7 +148,11 @@ def connected_gate_passes(
     representation_metrics=None,
     energy_metrics=None,
     require_classification=True,
+    classification_metrics=None,
 ):
     return not connected_gate_failures(
-        representation_metrics, energy_metrics, require_classification=require_classification
+        representation_metrics,
+        energy_metrics,
+        require_classification=require_classification,
+        classification_metrics=classification_metrics,
     )
