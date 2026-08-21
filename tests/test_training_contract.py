@@ -3,6 +3,7 @@ import hashlib
 from types import SimpleNamespace
 
 import pytest
+
 torch = pytest.importorskip("torch")
 
 from oasis_cycle_aosk.aosk import oriented_consistency_loss
@@ -21,6 +22,7 @@ from oasis_rc_v2.checkpoint import (
     EXPERIMENT_ID,
     IMPLEMENTATION_VERSION,
     METHOD_VERSION,
+    validate_critic_checkpoint,
 )
 from oasis_rc_v2.critic import OASISRCv2Critic
 from oasis_rc_v2.losses import segmentation_loss, oasis_rc_student_loss_v2
@@ -28,10 +30,12 @@ from oasis_rc_v2.losses import segmentation_loss, oasis_rc_student_loss_v2
 
 def flat(loss, params, retain=False):
     grads = torch.autograd.grad(loss, params, retain_graph=retain, allow_unused=True)
-    return torch.cat([
-        (torch.zeros_like(p) if g is None else g).reshape(-1)
-        for p, g in zip(params, grads)
-    ])
+    return torch.cat(
+        [
+            (torch.zeros_like(p) if g is None else g).reshape(-1)
+            for p, g in zip(params, grads)
+        ]
+    )
 
 
 def fixture():
@@ -61,7 +65,9 @@ def test_s1_equals_s3_when_lambda_aosk_zero():
     logits = student(x)
     seg = segmentation_loss(logits, y)
     pred = logits.sigmoid()
-    wrong, _ = make_corrupted_mask(y, generator=make_generator(torch.device("cpu"), 17))
+    wrong, _ = make_corrupted_mask(
+        y, generator=make_generator(torch.device("cpu"), 17)
+    )
     with torch.no_grad():
         gt = critic(x, y)
         corrupt = critic(x, wrong)
@@ -71,9 +77,16 @@ def test_s1_equals_s3_when_lambda_aosk_zero():
         flat(seg + 0.001 * rc, params, True),
         flat(seg + 0.001 * rc + 0 * aosk, params),
     )
-    assert all(key in extras for key in (
-        "e_pred", "e_gt", "e_corrupted", "delta_pred_gt", "delta_pred_corrupted"
-    ))
+    assert all(
+        key in extras
+        for key in (
+            "e_pred",
+            "e_gt",
+            "e_corrupted",
+            "delta_pred_gt",
+            "delta_pred_corrupted",
+        )
+    )
 
 
 def test_rc_corruption_rng_does_not_change_augmentation_sequence():
@@ -143,34 +156,20 @@ def test_student_init_seed_mismatch_is_rejected(tmp_path):
     student = MultiScaleLightweightSegmenter(width=4)
     setattr(student, "_oasis_width", 4)
     path = tmp_path / "init.pt"
-    torch.save({
-        "student": student.state_dict(),
-        "student_kind": "multiscale",
-        "student_width": 4,
-        "seed": 1337,
-    }, path)
+    torch.save(
+        {
+            "student": student.state_dict(),
+            "student_kind": "multiscale",
+            "student_width": 4,
+            "seed": 1337,
+        },
+        path,
+    )
     with pytest.raises(ValueError, match="seed mismatch"):
         load_student_init(student, path, 2027)
 
 
-def test_critic_provenance_and_schema_fail_closed(tmp_path):
-    manifest = tmp_path / "manifest.jsonl"
-    manifest.write_text("canonical-bytes\n")
-    full_certificate = tmp_path / "full_gate0.json"
-    full_certificate.write_text('{"status":"PASS","scope":"full_benchmark"}')
-    dataset_sha = "d" * 64
-    args = SimpleNamespace(
-        manifest=str(manifest),
-        normal_fraction=0.25,
-        normal_critic_weight=1.0,
-        crack_dice_weight=1.0,
-        mismatch_weight=1.0,
-        pair_weight=0.25,
-        rgb_mask_weight=1.0,
-        _dataset_content_sha256=dataset_sha,
-        full_gate0_certificate=str(full_certificate),
-    )
-    cfg = {"seed": 1337, "image_size": 256}
+def _qualified_saved_critic(manifest, full_certificate, dataset_sha, cfg):
     training_hparams = {
         "crack_dice_weight": 1.0,
         "mismatch_weight": 1.0,
@@ -181,8 +180,10 @@ def test_critic_provenance_and_schema_fail_closed(tmp_path):
         "rgb_shuffle_pair_only": True,
         "mask_flip_training": False,
         "mask_variant_contract": "operator-preserved-v1",
+        "energy_head_contract": "dedicated-scalar-lower-is-better-v1",
+        "method_spec": "METHOD_SPEC_V2_1.md",
     }
-    saved = {
+    return {
         "checkpoint_schema": CHECKPOINT_SCHEMA,
         "experiment_id": EXPERIMENT_ID,
         "method_version": METHOD_VERSION,
@@ -198,28 +199,114 @@ def test_critic_provenance_and_schema_fail_closed(tmp_path):
         "normal_fraction": 0.25,
         "normal_critic_weight": 1.0,
         "training_hparams": training_hparams,
+        "qualification_v21": {"pass": True, "failures": []},
     }
-    validate_loaded_critic(saved, args, cfg)
+
+
+def test_v21_critic_provenance_and_schema_fail_closed(tmp_path):
+    manifest = tmp_path / "manifest.jsonl"
+    manifest.write_text("canonical-bytes\n")
+    full_certificate = tmp_path / "full_gate0.json"
+    full_certificate.write_text('{"status":"PASS","scope":"full_benchmark"}')
+    dataset_sha = "d" * 64
+    cfg = {"seed": 1337, "image_size": 256}
+    saved = _qualified_saved_critic(manifest, full_certificate, dataset_sha, cfg)
+    expected = {
+        key: saved["training_hparams"][key]
+        for key in (
+            "energy_head_contract",
+            "mask_variant_contract",
+            "rgb_shuffle_pair_only",
+            "mask_flip_training",
+            "method_spec",
+        )
+    }
+    validate_critic_checkpoint(
+        saved,
+        manifest,
+        cfg,
+        0.25,
+        1.0,
+        dataset_content_sha256_value=dataset_sha,
+        expected_hparams=expected,
+        full_gate0_certificate=full_certificate,
+    )
 
     bad = dict(saved)
     bad.pop("checkpoint_schema")
     with pytest.raises(ValueError, match="legacy checkpoint rejected"):
-        validate_loaded_critic(bad, args, cfg)
+        validate_critic_checkpoint(
+            bad,
+            manifest,
+            cfg,
+            0.25,
+            1.0,
+            expected_hparams=expected,
+            full_gate0_certificate=full_certificate,
+        )
 
     bad_impl = dict(saved)
     bad_impl["implementation_version"] = "legacy"
     with pytest.raises(ValueError, match="implementation_version"):
-        validate_loaded_critic(bad_impl, args, cfg)
+        validate_critic_checkpoint(
+            bad_impl,
+            manifest,
+            cfg,
+            0.25,
+            1.0,
+            expected_hparams=expected,
+            full_gate0_certificate=full_certificate,
+        )
 
     bad_data = dict(saved)
     bad_data["dataset_content_sha256"] = "0" * 64
     with pytest.raises(ValueError, match="dataset-content"):
-        validate_loaded_critic(bad_data, args, cfg)
+        validate_critic_checkpoint(
+            bad_data,
+            manifest,
+            cfg,
+            0.25,
+            1.0,
+            dataset_content_sha256_value=dataset_sha,
+            expected_hparams=expected,
+            full_gate0_certificate=full_certificate,
+        )
 
     bad_contract = copy.deepcopy(saved)
     bad_contract["training_hparams"].pop("mask_flip_training")
     with pytest.raises(ValueError, match="mask_flip_training"):
-        validate_loaded_critic(bad_contract, args, cfg)
+        validate_critic_checkpoint(
+            bad_contract,
+            manifest,
+            cfg,
+            0.25,
+            1.0,
+            expected_hparams=expected,
+            full_gate0_certificate=full_certificate,
+        )
+
+
+def test_legacy_consumer_fails_closed_on_v21_dev2_critic(tmp_path):
+    manifest = tmp_path / "manifest.jsonl"
+    manifest.write_text("canonical-bytes\n")
+    full_certificate = tmp_path / "full_gate0.json"
+    full_certificate.write_text('{"status":"PASS","scope":"full_benchmark"}')
+    dataset_sha = "d" * 64
+    cfg = {"seed": 1337, "image_size": 256}
+    saved = _qualified_saved_critic(manifest, full_certificate, dataset_sha, cfg)
+    args = SimpleNamespace(
+        manifest=str(manifest),
+        normal_fraction=0.25,
+        normal_critic_weight=1.0,
+        crack_dice_weight=1.0,
+        mismatch_weight=1.0,
+        pair_weight=0.25,
+        rgb_mask_weight=1.0,
+        _dataset_content_sha256=dataset_sha,
+        full_gate0_certificate=str(full_certificate),
+    )
+    with pytest.raises(ValueError, match="full v2.1 contract"):
+        validate_loaded_critic(saved, args, cfg)
 
 
 def test_sha256_exact(tmp_path):
