@@ -24,7 +24,9 @@
   },
   "critic": {
     "width": 8,
-    "classification_loss": "balanced-semantic+valid-crack-dice+mismatch+pair",
+    "classification_loss": "0.5*(clean+corrupt)+rgb-shuffle-pair-only+optional-normal-donor",
+    "rgb_mask_weight": 1.0,
+    "normal_critic_weight": 1.0,
     "continuous_path": {
       "enabled": true,
       "levels": [0.0, 0.25, 0.5, 0.75, 1.0],
@@ -53,7 +55,9 @@
     "pair_weight": 0.25,
     "corrupted_rank_weight": 1.0,
     "fp_weight": 1.0,
-    "lambda_oasis": 0.001
+    "lambda_oasis": 0.001,
+    "warmup_epochs": 4,
+    "ramp_epochs": 3
   },
   "aosk": {
     "variant": "oriented-consistency-v1-isotropic-flat",
