@@ -136,8 +136,39 @@ def test_gate0_certificate_binds_dataset_bytes(tmp_path):
         "empty_target_status": "verified_no_crack",
     }
     manifest.write_text(json.dumps(row) + "\n")
+
+    image_sha = hashlib.sha256(image.read_bytes()).hexdigest()
+    mask_sha = hashlib.sha256(mask.read_bytes()).hexdigest()
+    inventory_row = {
+        "row": 0,
+        "split": "train",
+        "source_id": "s",
+        "lineage_id": "l",
+        "is_normal": False,
+        "image": str(image.resolve()),
+        "image_sha256": image_sha,
+        "mask": str(mask.resolve()),
+        "mask_sha256": mask_sha,
+    }
+    full_inventory = tmp_path / "full.inventory.jsonl"
+    train_inventory = tmp_path / "train.inventory.jsonl"
+    inventory_bytes = json.dumps(inventory_row) + "\n"
+    full_inventory.write_text(inventory_bytes)
+    train_inventory.write_text(inventory_bytes)
+
     full = tmp_path / "gate0_full.json"
-    full.write_text(json.dumps({"status": "PASS", "scope": "full_benchmark"}))
+    full.write_text(
+        json.dumps(
+            {
+                "status": "PASS",
+                "scope": "full_benchmark",
+                "manifest_sha256": hashlib.sha256(manifest.read_bytes()).hexdigest(),
+                "dataset_content_sha256": dataset_content_sha256(manifest),
+                "dataset_inventory": str(full_inventory),
+                "dataset_inventory_sha256": hashlib.sha256(full_inventory.read_bytes()).hexdigest(),
+            }
+        )
+    )
     cert = tmp_path / "gate0.json"
     cert.write_text(
         json.dumps(
@@ -146,6 +177,8 @@ def test_gate0_certificate_binds_dataset_bytes(tmp_path):
                 "scope": "training_view",
                 "manifest_sha256": hashlib.sha256(manifest.read_bytes()).hexdigest(),
                 "dataset_content_sha256": dataset_content_sha256(manifest),
+                "dataset_inventory": str(train_inventory),
+                "dataset_inventory_sha256": hashlib.sha256(train_inventory.read_bytes()).hexdigest(),
                 "resize_size": 256,
                 "normal_policy": "none",
                 "parent_full_gate0_certificate_sha256": hashlib.sha256(

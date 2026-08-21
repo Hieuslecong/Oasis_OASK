@@ -1,0 +1,7 @@
+seed: 42421
+image_size: 256
+batch_size: 8
+device: cuda
+num_workers: 4
+lambda_oasis: 0.001
+critic_width: 8

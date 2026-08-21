@@ -20,11 +20,19 @@ class _ConvBlock(nn.Module):
 
 
 class OASISRCv2Critic(nn.Module):
-    """Training-only relational RGB-mask critic for canonical OASIS-RC v2.
+    """Training-only relational RGB-mask critic for OASIS-RC v2.1.
 
     Input: RGB image (B,3,H,W) and soft/binary mask (B,1,H,W).
-    Output: semantic logits (valid background / valid crack / invalid pair),
-    pixel mismatch logits and a pair-validity logit.
+    Output:
+      * semantic logits (valid background / valid crack / invalid pair),
+      * pixel mismatch logits,
+      * pair-validity logit,
+      * a dedicated scalar relation energy.
+
+    The dedicated ``energy`` head is deliberately separated from the
+    classification heads. Lower energy means a more compatible RGB-mask
+    relation. This avoids deriving the scientific ordering objective from
+    classifier probabilities whose optimum need not have the required sign.
     """
 
     def __init__(self, width=8):
@@ -44,6 +52,13 @@ class OASISRCv2Critic(nn.Module):
         self.crack_head = nn.Conv2d(width, 1, 1)
         self.mismatch_head = nn.Conv2d(width, 1, 1)
         self.pair_head = nn.Sequential(
+            nn.AdaptiveAvgPool2d(1),
+            nn.Flatten(),
+            nn.Linear(width * 4, width * 2),
+            nn.SiLU(),
+            nn.Linear(width * 2, 1),
+        )
+        self.energy_head = nn.Sequential(
             nn.AdaptiveAvgPool2d(1),
             nn.Flatten(),
             nn.Linear(width * 4, width * 2),
@@ -90,4 +105,5 @@ class OASISRCv2Critic(nn.Module):
             "mismatch": mismatch,
             "invalid": mismatch,
             "pair": self.pair_head(z3).flatten(1),
+            "energy": self.energy_head(z3).flatten(1),
         }

@@ -1,319 +1,120 @@
-# OASIS-RC v2 crack-segmentation research package
+# OASIS-RC-v2.1 crack segmentation
 
-This branch contains the source-anchored reconstructed OASIS-RC v2 implementation for crack segmentation. The exact historical v2 snapshot was not preserved, so historical numbers must not be described as bit-for-bit reproducible from this tree.
-
-```text
-experiment_id          = oasis-rc-v2-relational-hard-negative
-checkpoint_schema      = 3
-method_version         = OASIS-RC-v2
-implementation_version = 2.0.4
-```
-
-## Scientific contract
-
-Official controlled arms:
+Compact research implementation of **OASIS-RC-v2.1-dev2** for training lightweight RGB-only crack-segmentation models with training-only relational and orientation-aware supervision.
 
 ```text
-S0_control
-  L = L_seg
-
-S1_oasis_rc_v2
-  L = L_seg + lambda_oasis * rc_ramp * L_RCv2
-
-S2_aosk
-  L = L_seg + lambda_aosk * L_AOSK_oriented
-
-S3_oasis_rc_v2_aosk
-  L = L_seg
-    + lambda_oasis * rc_ramp * L_RCv2
-    + lambda_aosk * L_AOSK_oriented
+method_version         = OASIS-RC-v2.1
+implementation_version = 2.1.0-dev2
+checkpoint_schema      = 5
+experiment_id          = oasis-rc-v2.1-gt-anchored-relational-energy-head
 ```
 
-`L_seg = BCE + Dice`.
+Scientific source of truth: `METHOD_SPEC_V2_1.md`  
+Metric contract: `METRIC_SPEC_V2_1.md`  
+Executable protocol: `protocols/real_data_v21.json`
 
-The canonical AOSK variant in 2.0.4 is the original source-anchored `oriented-consistency-v1`. The centerline/clDice implementation remains available only as an optional ablation; it is not the official S2/S3 objective.
+## Inference contract
 
-OASIS-RC and AOSK are training-only. Deployment is always:
+Deployment is always:
 
 ```text
-RGB -> student -> crack logits/mask
+RGB -> lightweight student -> crack logits/mask
 ```
 
-Student deployment checkpoints contain student state only and reject critic/generator/discriminator/AOSK training state.
+The relation critic, relation-energy head, AOSK and clDice supervision are training-only. Deployment checkpoints must not contain critic/generator/discriminator/AOSK state.
 
-## OASIS-RC v2 critic
+The canonical primary student is MobileNetV3-Small-style with **fixed canonical width metadata `16`**. This implementation does not expose width scaling for MobileNetV3; canonical shared initialization rejects any other `student_width`, and deployment-checkpoint validation rejects non-16 MobileNetV3 metadata. Other lightweight backbones retain their explicit width parameter.
 
-Input:
+## Experimental arms
 
 ```text
-RGB image + soft/binary mask
+B0  BCE + Dice
+B1  B0 + clDice
+B2  B0 + frozen pretrained pair-critic BCE
+S1  B0 + OASIS-RC-v2.1
+S2  B0 + AOSK structure-tensor-v2
+S3  B0 + OASIS-RC-v2.1 + AOSK structure-tensor-v2
 ```
 
-The critic keeps the inherited source architecture:
+B2 is a frozen pair-critic ablation, not conventional jointly-trained adversarial learning. Primary paired contrasts are `B1-B0`, `B2-B0`, `S1-B0`, `S2-B0`, and `S3-S2`. Null/negative effects are valid outcomes.
 
-```text
-separate RGB/mask encoders
--> fi, fm, fi*fm, abs(fi-fm)
--> relational fusion
--> crack / mismatch / pair-validity outputs
-```
+## Data protocols
 
-The semantic logits are the inherited hierarchical composition from crack and mismatch logits. Implementation 2.0.4 does not redesign the critic head structure.
+**N0:** no external normal supervision; certified native-empty rows may remain internal true negatives.
 
-## C1-C9 hard-negative contract
+**N25:** external true-normal RGB occupies 25% of the training batch budget. Normal data must be lineage-disjoint across `normal_train`, `normal_val`, and `normal_test`. Critic qualification for N25 uses held-out `normal_val`, never `normal_train` as a fallback.
 
-```text
-C1 translation
-C2 erosion
-C3 dilation
-C4 local crack break
-C5 wrong width
-C6 wrong connection / bridge
-C7 non-self crack donor mask
-C8 crack mask on true-normal RGB
-C9 texture-guided false-positive blob
-```
-
-Hardening retained in 2.0.4:
-
-- operator identity is preserved; no arbitrary pixel rescue;
-- C7 requires a non-self crack-positive donor;
-- C8 is valid only on explicit true-normal RGB with a crack-positive donor;
-- C9 uses RGB texture when available;
-- metadata records the actual returned operator;
-- `torch.roll` is not used.
-
-## Critic objective
-
-```text
-L_critic =
-    L_semantic_balanced
-  + lambda_crack    * L_valid_crack_dice
-  + lambda_mismatch * L_mismatch
-  + lambda_pair     * L_pair
-  + lambda_rgb_mask * L_RGB_spatial_shuffle_pair
-  + optional normal-RGB donor supervision
-```
-
-RGB spatial shuffle is pair-validity-only. Mask flip is a qualification diagnostic (`mask_pair_drop`) and is not part of critic optimizer gradients.
-
-Critic checkpoints bind:
-
-```text
-rgb_shuffle_pair_only = true
-mask_flip_training     = false
-mask_variant_contract  = operator-preserved-v1
-```
-
-The validator is fail-closed: missing contract metadata is rejected rather than synthesized.
-
-## Student RC objective
-
-The reconstructed student objective remains unchanged:
-
-```text
-rank(pred, GT)
-+ rank(pred, corrupted)
-+ background false-positive penalty
-```
-
-GT/corrupted energies are detached and the critic is frozen during student optimization.
-
-## Data integrity and test firewall
-
-Retained protocol hardening:
-
-```text
-canonical manifest
--> split/lineage normalization
--> leakage + exact-duplicate repair
--> fail-closed CleanEval
--> dataset-byte-bound Gate 0
--> certified train/val view
--> validation-only model/threshold selection
--> final canonical test exactly once after protocol lock
-```
-
-Official training code refuses canonical test rows.
-
-## N0 and N25 are explicit protocols
-
-### N0 — crack-only primary protocol
-
-N0 does **not** require `NORMAL_ROOT`.
+Prepare the canonical benchmark and training views with:
 
 ```bash
-export PYTHON=/hdd1/hieulc/Oasis_AOSK/.venv-oasis-rc-v2-gpu/bin/python
-export CANONICAL_MANIFEST=/absolute/path/to/canonical_manifest.jsonl
-export DATA_ROOT=/hdd1/hieulc/Oasis_AOSK/experiments/oasis_rc_v2_n0/data
-bash scripts/prepare_n0_data.sh
+export DATA_ROOT=/path/to/data_v21
+export CANONICAL_MANIFEST=/path/to/canonical_manifest.jsonl
+export NORMAL_ROOT=/path/to/true_normal_rgb
+export LINEAGE_REGEX='...'
+bash scripts/prepare_real_data_v21.sh
 ```
 
-### N25 — true-normal RGB extension
+The preparation path performs cleaning/CleanEval, audited normal splitting, full-benchmark Gate0, and separate N0/N25 training-view Gate0 certificates. Canonical `test` and `normal_test` rows never enter training views.
 
-N25 requires an audited true-normal source:
+## Development run
 
-```bash
-export PYTHON=/hdd1/hieulc/Oasis_AOSK/.venv-oasis-rc-v2-gpu/bin/python
-export CANONICAL_MANIFEST=/absolute/path/to/canonical_manifest.jsonl
-export NORMAL_ROOT=/absolute/path/to/true_normal_rgb
-export DATA_ROOT=/hdd1/hieulc/Oasis_AOSK/experiments/oasis_rc_v2_n25/data
-bash scripts/prepare_real_data.sh
+Canonical order:
+
+```text
+Gate0
+-> CUDA preflight
+-> shared student initialization
+-> B0/S0 baseline
+-> critic training
+-> representation + relation-energy qualification
+-> trained-S0 RC gradient/energy diagnostic
+-> freeze auxiliary weights
+-> B0/B1/B2/S1/S2/S3
+-> separate crack-val and normal-val evaluation
 ```
 
-Do not describe N25 S0 as the historical crack-only control. N0 and N25 are separate experiments.
-
-## One-seed acceptance
-
-Start with seed 1337.
-
-### N0
+Main entry point:
 
 ```bash
-export EXP_ROOT=/hdd1/hieulc/Oasis_AOSK/experiments/oasis_rc_v2_n0/seed_1337
-export DATA_ROOT=/hdd1/hieulc/Oasis_AOSK/experiments/oasis_rc_v2_n0/data
-export CANONICAL_MANIFEST=/absolute/path/to/canonical_manifest.jsonl
-export PYTHON=/hdd1/hieulc/Oasis_AOSK/.venv-oasis-rc-v2-gpu/bin/python
+export NORMAL_FRACTION=0.0   # N0, or 0.25 for N25
 export SEED=1337
-export NORMAL_FRACTION=0.0
-export CRITIC_EPOCHS=10
-export EPOCHS=12
-export LAMBDA_OASIS=0.001
-export LAMBDA_AOSK=0.01
-export DETERMINISM_MODE=best_effort
-bash scripts/run_training_ready.sh 2>&1 | tee "$EXP_ROOT/training_ready.log"
+export EXP_ROOT=/path/to/experiments/v21/seed1337
+export DATA_ROOT=/path/to/data_v21
+export CANONICAL_MANIFEST=/path/to/canonical_manifest.jsonl
+export NORMAL_ROOT=/path/to/true_normal_rgb
+export LINEAGE_REGEX='...'
+bash scripts/run_training_ready_v21.sh
 ```
 
-### N25
+Development critic gates are fail-closed. At minimum: valid-crack recall `>=0.80`, invalid recall `>=0.90`, RGB/mask pair drops `>=0.05`, minimum required-corruption recall `>=0.70`, at least 16 samples per required corruption, positive energy-gap fraction `>=0.70`, continuous path-order fraction `>=0.65`, mean/median energy gap `>0`, at least 16 energy samples, and finite energies. Do not lower gates to obtain a PASS.
 
-Use the same command with:
+## Evaluation and statistics
+
+Crack-positive rows use precision, recall, Dice, IoU, clDice, skeleton precision/recall and component-excess metrics. True-negative rows are evaluated separately with normal false-positive pixels/components and any-FP rate; crack-overlap metrics are not averaged over empty targets.
+
+Confirmatory inference uses the training seed as the sampling unit. Canonical confirmatory seeds are:
+
+```text
+2027  31415  42421  51511  62617
+```
+
+The immutable final bundle requires all six arms for all five seeds, frozen thresholds, exact data/spec/protocol/evaluator hashes, paired initialization/training-view provenance and one frozen Git commit.
+
+## Verification policy
+
+**Testing is local/external; GitHub is source storage only.** No GitHub Actions workflow or repository-resident synthetic smoke harness is required for the research package.
+
+Before source is stored, run local checks in the execution environment, for example:
 
 ```bash
-export NORMAL_FRACTION=0.25
-export NORMAL_ROOT=/absolute/path/to/true_normal_rgb
+python -m compileall src scripts tests
+pytest -q
 ```
 
-Success ends with:
+Then run an end-to-end smoke on representative train/validation data with the canonical test firewall closed. Smoke evidence is mechanical integration evidence only; it does not establish model efficacy.
 
-```text
-TRAINING_PIPELINE_READY seed=1337
-AOSK_VARIANT=oriented-consistency-v1
-TEST_FIREWALL=CLOSED
-```
+For real experiments, `scripts/preflight_v21_real_gpu.py` remains the target-host CUDA/backward gate. Full scientific GO additionally requires the real dataset Gate0 certificates, real critic qualification, trained-S0 diagnostic, frozen development decisions and the complete multi-seed protocol.
 
-## Critic qualification
+## Final-test firewall
 
-Base gates include:
-
-```text
-valid_crack_recall            >= 0.80
-invalid_recall                >= 0.90
-rgb_pair_drop                 >= 0.05
-mask_pair_drop                >= 0.05
-min_corruption_invalid_recall >= 0.70
-no background-only collapse
-```
-
-N25 additionally requires true-normal/C8 qualification evidence. Normal-domain diagnostics from `normal_train` are training-domain qualification metrics and must not be described as independent held-out generalization.
-
-## Full smoke without opening canonical test
-
-Example N0 smoke:
-
-```bash
-export CANONICAL_MANIFEST=/absolute/path/to/canonical_manifest.jsonl
-export PYTHON=/hdd1/hieulc/Oasis_AOSK/.venv-oasis-rc-v2-gpu/bin/python
-export EXP_ROOT=/hdd1/hieulc/Oasis_AOSK/experiments/full_smoke_n0_1337
-export NORMAL_FRACTION=0.0
-bash scripts/run_full_smoke_train_test.sh
-```
-
-For N25 add `NORMAL_ROOT` and set `NORMAL_FRACTION=0.25`.
-
-Success ends with:
-
-```text
-FULL_SMOKE_PASS
-AOSK_VARIANT=oriented-consistency-v1
-SMOKE_TEST_SPLIT=smoke_test
-CANONICAL_TEST_OPENED=NO
-TEST_FIREWALL=CLOSED
-```
-
-`smoke_test` is derived from train/validation-domain rows and is not the canonical benchmark test.
-
-## Three seeds
-
-Canonical seeds are exactly:
-
-```text
-1337
-2027
-31415
-```
-
-Use only `scripts/run_all_seeds.sh`. The obsolete `run_three_seeds.sh` runner has been removed.
-
-### N0
-
-```bash
-export BASE_EXP_ROOT=/hdd1/hieulc/Oasis_AOSK/experiments/oasis_rc_v2_3seed_n0
-export CANONICAL_MANIFEST=/absolute/path/to/canonical_manifest.jsonl
-export PYTHON=/hdd1/hieulc/Oasis_AOSK/.venv-oasis-rc-v2-gpu/bin/python
-export NORMAL_FRACTION=0.0
-bash scripts/run_all_seeds.sh
-```
-
-### N25
-
-```bash
-export BASE_EXP_ROOT=/hdd1/hieulc/Oasis_AOSK/experiments/oasis_rc_v2_3seed_n25
-export CANONICAL_MANIFEST=/absolute/path/to/canonical_manifest.jsonl
-export NORMAL_ROOT=/absolute/path/to/true_normal_rgb
-export PYTHON=/hdd1/hieulc/Oasis_AOSK/.venv-oasis-rc-v2-gpu/bin/python
-export NORMAL_FRACTION=0.25
-bash scripts/run_all_seeds.sh
-```
-
-## CUDA reproducibility
-
-Canonical GPU runners use:
-
-```text
-DETERMINISM_MODE=best_effort
-CUBLAS_WORKSPACE_CONFIG=:4096:8
-cuDNN benchmark=false
-cuDNN deterministic=true
-TF32=false
-```
-
-Run/checkpoint metadata records the relevant runtime and data provenance.
-
-## Final test exactly once
-
-Training, smoke and validation keep the canonical test closed. After architecture, checkpoint, hyperparameters and threshold are frozen, create the protocol lock and run:
-
-```bash
-bash scripts/run_final_test.sh /absolute/path/PROTOCOL_LOCK.json
-```
-
-The final-test runner atomically marks the test opened before reading canonical test data and has no normal paper replay path.
-
-## CI versus host acceptance
-
-GitHub CI checks installation, compileall, pytest, canonical method-contract assertions and shell syntax. It does not certify the real `/hdd1/...` data or NVIDIA A30 runtime.
-
-Required acceptance sequence:
-
-```text
-GitHub CI PASS
--> real-data Gate 0 PASS
--> A30/CUDA preflight PASS
--> critic qualification PASS
--> seed-1337 S0-S3 smoke/validation PASS
--> N0 and/or N25 three-seed validation
--> freeze protocol
--> canonical test once
-```
-
-Never lower a data or critic gate after observing experiment outcomes.
+`test` and `normal_test` are canonical final-test material. Development trainers/diagnostics/evaluators refuse them. Canonical final evaluation is permitted only through `scripts/run_final_bundle_v21.py` after all models, thresholds, metrics and statistical decisions are frozen. Until then, the final test remains **CLOSED**.

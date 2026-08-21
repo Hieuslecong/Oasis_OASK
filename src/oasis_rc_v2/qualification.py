@@ -15,6 +15,19 @@ NORMAL_MAXIMUMS = {
     "normal_invalid_rate": 0.20,
 }
 
+# Development-only defaults. They are intentionally modest and MUST be frozen
+# from development evidence before any confirmatory run. They test whether an
+# energy landscape exists at all; they are not paper significance thresholds.
+ENERGY_DEV_MINIMUMS = {
+    "positive_energy_gap_fraction": 0.70,
+    "continuous_path_order_fraction": 0.65,
+}
+ENERGY_DEV_POSITIVE = (
+    "median_energy_gap",
+    "mean_energy_gap",
+)
+ENERGY_MIN_SAMPLES = 16
+
 BASE_CORRUPTIONS = (
     "C1_translation",
     "C2_erosion",
@@ -30,6 +43,7 @@ MIN_SAMPLES_PER_CORRUPTION = 16
 
 
 def critic_gate_failures(metrics):
+    """Representation/classification gate retained from v2.0.4."""
     failures = []
     normal_expected = bool(
         metrics.get(
@@ -37,12 +51,10 @@ def critic_gate_failures(metrics):
             int(metrics.get("normal_samples", 0)) > 0,
         )
     )
-
     for key, threshold in BASE_MINIMUMS.items():
         value = metrics.get(key)
         if value is None or float(value) < threshold:
             failures.append(f"{key}>={threshold:.2f}")
-
     if normal_expected:
         for key, threshold in NORMAL_MINIMUMS.items():
             value = metrics.get(key)
@@ -54,14 +66,12 @@ def critic_gate_failures(metrics):
                 failures.append(f"{key}<={threshold:.2f}")
         if int(metrics.get("normal_samples", 0)) <= 0:
             failures.append("normal_samples>0")
-
     if int(metrics.get("rgb_pair_samples", 0)) <= 0:
         failures.append("rgb_pair_samples>0")
     if int(metrics.get("mask_pair_samples", 0)) <= 0:
         failures.append("mask_pair_samples>0")
     if int(metrics.get("valid_crack_predictions", 0)) <= 0:
         failures.append("no_background_only_collapse")
-
     per_kind = metrics.get("corruption_invalid_recall", {})
     per_kind_samples = metrics.get("corruption_samples", {})
     required_corruptions = list(BASE_CORRUPTIONS)
@@ -77,3 +87,72 @@ def critic_gate_failures(metrics):
 
 def critic_gate_passes(metrics):
     return not critic_gate_failures(metrics)
+
+
+def relation_energy_gate_failures(metrics):
+    """v2.1 usability gate for the relation-energy landscape."""
+    failures = []
+    if int(metrics.get("energy_samples", 0)) < ENERGY_MIN_SAMPLES:
+        failures.append(f"energy_samples>={ENERGY_MIN_SAMPLES}")
+    for key, threshold in ENERGY_DEV_MINIMUMS.items():
+        value = metrics.get(key)
+        if value is None or float(value) < threshold:
+            failures.append(f"{key}>={threshold:.2f}")
+    for key in ENERGY_DEV_POSITIVE:
+        value = metrics.get(key)
+        if value is None or float(value) <= 0.0:
+            failures.append(f"{key}>0")
+    if metrics.get("energy_finite") is not True:
+        failures.append("energy_finite=true")
+    return failures
+
+
+def relation_energy_gate_passes(metrics):
+    return not relation_energy_gate_failures(metrics)
+
+
+def connected_gate_failures(
+    representation_metrics=None,
+    energy_metrics=None,
+    require_classification=True,
+    classification_metrics=None,
+):
+    """Combined fail-closed gate.
+
+    Official qualification supplies representation and energy dictionaries.
+    A development smoke may explicitly disable the representation gate to
+    isolate continuous-energy mechanics; this is never sufficient evidence for
+    confirmatory runs.
+    """
+    if classification_metrics is not None:
+        representation_metrics = classification_metrics
+    if not require_classification and energy_metrics is None:
+        # Compatibility for the development runner call where the energy metrics
+        # are the first positional argument.
+        energy_metrics = representation_metrics
+        representation_metrics = None
+    failures = []
+    if require_classification:
+        if representation_metrics is None:
+            failures.append("classification_metrics_required")
+        else:
+            failures.extend(critic_gate_failures(representation_metrics))
+    if energy_metrics is None:
+        failures.append("energy_metrics_required")
+    else:
+        failures.extend(relation_energy_gate_failures(energy_metrics))
+    return failures
+
+
+def connected_gate_passes(
+    representation_metrics=None,
+    energy_metrics=None,
+    require_classification=True,
+    classification_metrics=None,
+):
+    return not connected_gate_failures(
+        representation_metrics,
+        energy_metrics,
+        require_classification=require_classification,
+        classification_metrics=classification_metrics,
+    )
