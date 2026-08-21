@@ -1,7 +1,7 @@
 """OASIS-RC-v2.1 real-data development runner.
 
 This entrypoint is intentionally separate from reconstructed v2.0.4. It refuses
-canonical/held-out test rows. Connected/adversarial arms require a schema-5
+canonical/held-out test rows. Connected/frozen-pair arms require a schema-5
 critic whose representation and dedicated relation-energy gates both pass.
 """
 from __future__ import annotations
@@ -23,7 +23,11 @@ from oasis_rc_v2.checkpoint import (
 )
 from oasis_rc_v2.corruptions import build_targets, make_corrupted_mask
 from oasis_rc_v2.critic import OASISRCv2Critic
-from oasis_rc_v2.energy_qualification import summarize_energy_trajectory
+from oasis_rc_v2.energy_qualification import (
+    gradient_alignment_diagnostics,
+    relation_energy_trajectory,
+    summarize_energy_trajectories,
+)
 from oasis_rc_v2.losses import (
     adversarial_pair_student_loss,
     continuous_relation_path_loss,
@@ -54,7 +58,7 @@ from .train_oasis_rc_v2 import (
 
 ARMS = {"control", "connected", "aosk", "aosk_connected", "cldice", "adversarial"}
 ENERGY_HEAD_CONTRACT = "dedicated-scalar-lower-is-better-v1"
-AOSK_VARIANT = "oriented-consistency-v1-isotropic-flat"
+AOSK_VARIANT = "structure-tensor-steered-v2"
 
 
 def _optimizer(params, args):
@@ -80,6 +84,8 @@ def _mean(values):
 
 def _critic_hparams(args, cfg, determinism):
     return {
+        # Historical optimizer settings are provenance only. The checkpoint
+        # validator compares only its declared scientific compatibility subset.
         "lr": float(args.lr),
         "weight_decay": float(args.weight_decay),
         "betas": [float(args.beta1), float(args.beta2)],
@@ -237,19 +243,21 @@ def train_critic(args, cfg, device, out, determinism):
 
         if args.normal_fraction > 0 and normal_seen <= 0:
             raise RuntimeError("normal supervision requested but critic saw zero true-normal samples")
-        history.append({
-            "epoch": epoch,
-            "loss": _mean(totals),
-            "representation": _mean(representation_losses),
-            "energy_endpoint": _mean(endpoint_losses),
-            "energy_path": _mean(path_losses),
-            "endpoint_order_fraction": _mean(endpoint_orders),
-            "path_order_fraction": _mean(path_orders),
-            "endpoint_gap_mean": _mean(endpoint_gaps),
-            "normal_samples_seen": normal_seen,
-            "rgb_shuffle_samples": rgb_seen,
-            "corruption_counts": corruption_counts,
-        })
+        history.append(
+            {
+                "epoch": epoch,
+                "loss": _mean(totals),
+                "representation": _mean(representation_losses),
+                "energy_endpoint": _mean(endpoint_losses),
+                "energy_path": _mean(path_losses),
+                "endpoint_order_fraction": _mean(endpoint_orders),
+                "path_order_fraction": _mean(path_orders),
+                "endpoint_gap_mean": _mean(endpoint_gaps),
+                "normal_samples_seen": normal_seen,
+                "rgb_shuffle_samples": rgb_seen,
+                "corruption_counts": corruption_counts,
+            }
+        )
 
     checkpoint = {
         "checkpoint_schema": CHECKPOINT_SCHEMA,
@@ -276,39 +284,34 @@ def train_critic(args, cfg, device, out, determinism):
 
 @torch.no_grad()
 def energy_qualification(critic, loader, device, margin):
+    """Qualify from the complete validation trajectory population.
+
+    Concatenating per-sample energies before summarisation is required for a
+    mathematically correct global median; averaging batch medians is not a
+    median and could otherwise produce a false PASS.
+    """
     critic.eval()
     generator = make_generator(device, 99173)
-    rows = []
+    trajectories = []
+    levels = (0.0, 0.25, 0.5, 0.75, 1.0)
     for batch in loader:
         x, y, is_normal = _unpack(batch)
         x, y = x.to(device), y.to(device)
         is_normal = is_normal.to(device, dtype=torch.bool)
-        wrong, _ = make_corrupted_mask(y, true_normal=is_normal, generator=generator, image=x)
-        rows.append(summarize_energy_trajectory(
-            critic,
-            x,
-            y,
-            wrong,
-            levels=(0.0, 0.25, 0.5, 0.75, 1.0),
-            margin=margin,
-        ))
-    if not rows:
+        wrong, _ = make_corrupted_mask(
+            y, true_normal=is_normal, generator=generator, image=x
+        )
+        trajectories.append(
+            relation_energy_trajectory(
+                critic, x, y, wrong, t_values=levels
+            ).detach().cpu()
+        )
+    if not trajectories:
         return {"energy_samples": 0, "energy_finite": False}
-    total = sum(int(r.get("energy_samples", 0)) for r in rows)
-    result = {
-        "energy_samples": total,
-        "energy_finite": all(bool(r.get("energy_finite", False)) for r in rows),
-    }
-    for key in (
-        "positive_energy_gap_fraction",
-        "continuous_path_order_fraction",
-        "mean_energy_gap",
-        "median_energy_gap",
-    ):
-        vals = [(float(r[key]), int(r.get("energy_samples", 0))) for r in rows if r.get(key) is not None]
-        if vals:
-            result[key] = sum(v * n for v, n in vals) / max(1, sum(n for _, n in vals))
-    return result
+    all_energies = torch.cat(trajectories, dim=0)
+    return summarize_energy_trajectories(
+        all_energies, t_values=levels, margin=margin
+    )
 
 
 def _validate_loaded_critic(saved, args, cfg):
@@ -337,19 +340,23 @@ def qualify_critic(critic, args, cfg, device, out):
     )
     normal_loader = None
     normal_split = None
-    if args.normal_fraction > 0 and manifest_has_split(args.manifest, "normal_val"):
+    if args.normal_fraction > 0:
+        if not manifest_has_split(args.manifest, "normal_val"):
+            raise RuntimeError("N25 critic qualification requires held-out normal_val")
         normal_split = "normal_val"
         normal_loader = make_loader(
-            args.manifest, "normal_val", cfg["image_size"], cfg["batch_size"], False,
-            cfg.get("num_workers", 0), seed=int(cfg["seed"]), return_is_normal=True,
+            args.manifest,
+            "normal_val",
+            cfg["image_size"],
+            cfg["batch_size"],
+            False,
+            cfg.get("num_workers", 0),
+            seed=int(cfg["seed"]),
+            return_is_normal=True,
         )
-    elif args.normal_fraction > 0 and manifest_has_split(args.manifest, "normal_train"):
-        normal_split = "normal_train-development-fallback"
-        normal_loader = make_loader(
-            args.manifest, "normal_train", cfg["image_size"], cfg["batch_size"], False,
-            cfg.get("num_workers", 0), seed=int(cfg["seed"]), return_is_normal=True,
-        )
-    representation = critic_metrics(critic, val_loader, device, normal_loader=normal_loader)
+    representation = critic_metrics(
+        critic, val_loader, device, normal_loader=normal_loader
+    )
     energy = energy_qualification(critic, val_loader, device, args.path_margin)
     failures = connected_gate_failures(representation, energy)
     report = {
@@ -363,16 +370,42 @@ def qualify_critic(critic, args, cfg, device, out):
     return report
 
 
+def _gradient_record(name, seg, term, logits, weight):
+    if term is None or float(weight) == 0.0:
+        return None
+    d = gradient_alignment_diagnostics(seg, term, logits)
+    raw_ratio = float(d["aux_to_seg_norm_ratio"])
+    return {
+        "name": name,
+        "weight": float(weight),
+        "seg_grad_norm": float(d["seg_grad_norm"]),
+        "aux_grad_norm": float(d["aux_grad_norm"]),
+        "raw_aux_to_seg_grad_ratio": raw_ratio,
+        "effective_aux_to_seg_grad_ratio": abs(float(weight)) * raw_ratio,
+        "cosine_similarity": float(d["cosine_similarity"]),
+        "finite": bool(d["finite"]),
+    }
+
+
 def train_student(args, cfg, device, out, critic=None):
     seed = int(cfg["seed"])
     seed_all(seed)
     loader, sampler = make_train_loader(
-        args.manifest, cfg["image_size"], cfg["batch_size"], args.normal_fraction,
-        seed, cfg.get("num_workers", 0),
+        args.manifest,
+        cfg["image_size"],
+        cfg["batch_size"],
+        args.normal_fraction,
+        seed,
+        cfg.get("num_workers", 0),
     )
     val_loader = make_loader(
-        args.manifest, "val", cfg["image_size"], cfg["batch_size"], False,
-        cfg.get("num_workers", 0), seed=seed,
+        args.manifest,
+        "val",
+        cfg["image_size"],
+        cfg["batch_size"],
+        False,
+        cfg.get("num_workers", 0),
+        seed=seed,
     )
     student = make_student(args.student_kind, args.student_width).to(device)
     setattr(student, "_oasis_width", int(args.student_width))
@@ -395,7 +428,9 @@ def train_student(args, cfg, device, out, critic=None):
         student.train()
         totals, segs, auxs, structs = [], [], [], []
         telemetry = []
+        grad_telemetry = []
         ramp = 0.0
+        gradient_sampled = False
         for batch in loader:
             x, y, is_normal = _unpack(batch)
             x, y = x.to(device), y.to(device)
@@ -406,6 +441,10 @@ def train_student(args, cfg, device, out, critic=None):
             total = seg
             aux = logits.new_zeros(())
             structural = logits.new_zeros(())
+            rc_weight = 0.0
+            structural_weight = 0.0
+            aux_name = None
+            structural_name = None
 
             if epoch >= args.warmup and args.mode in {"connected", "aosk_connected"}:
                 pred = logits.sigmoid()
@@ -426,20 +465,47 @@ def train_student(args, cfg, device, out, critic=None):
                     fp_weight=args.fp_weight,
                 )
                 ramp = min(1.0, (epoch - args.warmup + 1) / max(1, args.ramp_epochs))
-                total = total + float(args.lambda_oasis) * ramp * aux
-                telemetry.append({k: float(v) for k, v in extras.items() if torch.is_tensor(v) and v.numel() == 1})
+                rc_weight = float(args.lambda_oasis) * ramp
+                aux_name = "rc"
+                total = total + rc_weight * aux
+                telemetry.append(
+                    {
+                        k: float(v)
+                        for k, v in extras.items()
+                        if torch.is_tensor(v) and v.numel() == 1
+                    }
+                )
             elif epoch >= args.warmup and args.mode == "adversarial":
                 pred = logits.sigmoid()
                 aux = adversarial_pair_student_loss(critic(x, pred))
                 ramp = min(1.0, (epoch - args.warmup + 1) / max(1, args.ramp_epochs))
-                total = total + float(args.lambda_adversarial) * ramp * aux
+                rc_weight = float(args.lambda_adversarial) * ramp
+                aux_name = "frozen_pair_critic"
+                total = total + rc_weight * aux
 
             if args.mode in {"aosk", "aosk_connected"}:
                 structural = oriented_consistency_loss(logits, x, y)
-                total = total + float(args.lambda_aosk) * structural
+                structural_weight = float(args.lambda_aosk)
+                structural_name = "aosk"
+                total = total + structural_weight * structural
             elif args.mode == "cldice":
                 structural = centerline_cldice_loss(logits, y)
-                total = total + float(args.lambda_cldice) * structural
+                structural_weight = float(args.lambda_cldice)
+                structural_name = "cldice"
+                total = total + structural_weight * structural
+
+            if not gradient_sampled:
+                if aux_name is not None:
+                    record = _gradient_record(aux_name, seg, aux, logits, rc_weight)
+                    if record:
+                        grad_telemetry.append(record)
+                if structural_name is not None:
+                    record = _gradient_record(
+                        structural_name, seg, structural, logits, structural_weight
+                    )
+                    if record:
+                        grad_telemetry.append(record)
+                gradient_sampled = bool(grad_telemetry)
 
             optimizer.zero_grad(set_to_none=True)
             total.backward()
@@ -461,6 +527,7 @@ def train_student(args, cfg, device, out, critic=None):
             "structural": _mean(structs),
             "aux_ramp": ramp,
             "val": validation,
+            "gradient_telemetry": grad_telemetry,
         }
         if telemetry:
             for key in telemetry[0]:
@@ -469,7 +536,9 @@ def train_student(args, cfg, device, out, critic=None):
         key = float(validation["dice"])
         if best_key is None or key > best_key:
             best_key = key
-            best_state = {k: v.detach().cpu().clone() for k, v in student.state_dict().items()}
+            best_state = {
+                k: v.detach().cpu().clone() for k, v in student.state_dict().items()
+            }
 
     if best_state is None:
         raise RuntimeError("no student checkpoint selected")
@@ -500,8 +569,11 @@ def train_student(args, cfg, device, out, critic=None):
         "lambda_cldice": float(args.lambda_cldice),
         "lambda_adversarial": float(args.lambda_adversarial),
         "normal_fraction": float(args.normal_fraction),
+        "aosk_variant": AOSK_VARIANT,
+        "B2_semantics": "frozen-pretrained-pair-critic; not jointly-trained adversarial",
         "checkpoint_selection": "max-validation-micro-dice",
-        "threshold_selection": "max-validation-micro-dice-normal-fp-tiebreak",
+        "threshold_selection": "max-validation-micro-dice",
+        "gradient_telemetry": "one representative batch per active auxiliary per epoch",
     }
     checkpoint = {
         "checkpoint_schema": CHECKPOINT_SCHEMA,
@@ -552,28 +624,32 @@ def parser():
     p.add_argument("--ramp-epochs", type=int, default=3)
     p.add_argument("--critic-width", type=int, default=8)
     p.add_argument("--lr", type=float, default=2e-4)
-    p.add_argument("--weight-decay", type=float, default=.01)
-    p.add_argument("--beta1", type=float, default=.9)
-    p.add_argument("--beta2", type=float, default=.999)
+    p.add_argument("--weight-decay", type=float, default=0.01)
+    p.add_argument("--beta1", type=float, default=0.9)
+    p.add_argument("--beta2", type=float, default=0.999)
     p.add_argument("--adam-eps", type=float, default=1e-8)
     p.add_argument("--grad-clip", type=float, default=5.0)
     p.add_argument("--crack-dice-weight", type=float, default=1.0)
     p.add_argument("--mismatch-weight", type=float, default=1.0)
-    p.add_argument("--pair-weight", type=float, default=.25)
+    p.add_argument("--pair-weight", type=float, default=0.25)
     p.add_argument("--rgb-mask-weight", type=float, default=1.0)
     p.add_argument("--endpoint-weight", type=float, default=1.0)
-    p.add_argument("--endpoint-anchor-weight", type=float, default=.25)
-    p.add_argument("--endpoint-margin", type=float, default=.05)
+    p.add_argument("--endpoint-anchor-weight", type=float, default=0.25)
+    p.add_argument("--endpoint-margin", type=float, default=0.05)
     p.add_argument("--path-weight", type=float, default=1.0)
-    p.add_argument("--path-margin", type=float, default=.02)
-    p.add_argument("--student-margin", type=float, default=.10)
+    p.add_argument("--path-margin", type=float, default=0.02)
+    p.add_argument("--student-margin", type=float, default=0.10)
     p.add_argument("--corrupted-rank-weight", type=float, default=1.0)
     p.add_argument("--fp-weight", type=float, default=1.0)
-    p.add_argument("--lambda-oasis", type=float, default=.001)
-    p.add_argument("--lambda-aosk", type=float, default=.01)
-    p.add_argument("--lambda-cldice", type=float, default=.1)
-    p.add_argument("--lambda-adversarial", type=float, default=.001)
-    p.add_argument("--determinism-mode", choices=("off", "best_effort", "strict"), default="strict")
+    p.add_argument("--lambda-oasis", type=float, default=0.001)
+    p.add_argument("--lambda-aosk", type=float, default=0.01)
+    p.add_argument("--lambda-cldice", type=float, default=0.1)
+    p.add_argument("--lambda-adversarial", type=float, default=0.001)
+    p.add_argument(
+        "--determinism-mode",
+        choices=("off", "best_effort", "strict"),
+        default="strict",
+    )
     return p
 
 
@@ -593,8 +669,11 @@ def main():
         "train" if args.normal_fraction > 0 else "none",
         args.full_gate0_certificate,
     )
-    if args.normal_fraction > 0 and "normal_train" not in splits:
-        raise ValueError("N25 requires normal_train rows")
+    if args.normal_fraction > 0:
+        if "normal_train" not in splits:
+            raise ValueError("N25 requires normal_train rows")
+        if "normal_val" not in splits:
+            raise ValueError("N25 requires held-out normal_val rows")
     args._dataset_content_sha256 = cert["dataset_content_sha256"]
     args._determinism_mode = args.determinism_mode
     device = torch.device(cfg["device"])
@@ -615,9 +694,13 @@ def main():
         critic.load_state_dict(saved["critic"])
 
     if critic is not None:
+        # Re-qualify from current loaded weights on every consumer launch. Stored
+        # qualification is provenance; this measurement is the live safety gate.
         report = qualify_critic(critic, args, cfg, device, out)
         if report["failures"]:
-            raise RuntimeError("v2.1 critic qualification failed: " + ", ".join(report["failures"]))
+            raise RuntimeError(
+                "v2.1 critic qualification failed: " + ", ".join(report["failures"])
+            )
         if args.mode == "critic":
             payload = torch.load(out / "critic.pt", map_location="cpu", weights_only=False)
             payload["qualification_v21"] = report
