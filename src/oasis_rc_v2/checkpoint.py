@@ -1,9 +1,9 @@
 import hashlib
 from pathlib import Path
 
-EXPERIMENT_ID = "oasis-rc-v2.1-gt-anchored-relational-energy"
-CHECKPOINT_SCHEMA = 4
-IMPLEMENTATION_VERSION = "2.1.0-dev"
+EXPERIMENT_ID = "oasis-rc-v2.1-gt-anchored-relational-energy-head"
+CHECKPOINT_SCHEMA = 5
+IMPLEMENTATION_VERSION = "2.1.0-dev1"
 METHOD_VERSION = "OASIS-RC-v2.1"
 
 
@@ -22,18 +22,13 @@ def sha256_file(path):
 
 def _require_identity(saved, kind):
     if int(saved.get("checkpoint_schema", -1)) != CHECKPOINT_SCHEMA:
-        raise ValueError(
-            f"{kind} checkpoint_schema must be {CHECKPOINT_SCHEMA}; legacy checkpoint rejected"
-        )
+        raise ValueError(f"{kind} checkpoint_schema must be {CHECKPOINT_SCHEMA}; legacy checkpoint rejected")
     if saved.get("experiment_id") != EXPERIMENT_ID:
         raise ValueError(f"{kind} experiment_id mismatch; legacy/foreign checkpoint rejected")
     if saved.get("method_version") != METHOD_VERSION:
         raise ValueError(f"{kind} method_version mismatch")
     if saved.get("implementation_version") != IMPLEMENTATION_VERSION:
-        raise ValueError(
-            f"{kind} implementation_version mismatch: "
-            f"{saved.get('implementation_version')!r} != {IMPLEMENTATION_VERSION!r}"
-        )
+        raise ValueError(f"{kind} implementation_version mismatch: {saved.get('implementation_version')!r} != {IMPLEMENTATION_VERSION!r}")
 
 
 def _same_number(a, b, tol=1e-12):
@@ -50,35 +45,25 @@ def validate_critic_checkpoint(
     expected_hparams=None,
     full_gate0_certificate=None,
 ):
-    """Fail closed when a critic was trained under a different data/run contract."""
     _require_identity(saved, "critic")
     required = (
-        "critic",
-        "config",
-        "manifest_file_sha256",
-        "dataset_content_sha256",
-        "normal_fraction",
-        "normal_critic_weight",
-        "training_hparams",
-        "width",
-        "seed",
-        "full_gate0_certificate_sha256",
+        "critic", "config", "manifest_file_sha256", "dataset_content_sha256",
+        "normal_fraction", "normal_critic_weight", "training_hparams", "width",
+        "seed", "full_gate0_certificate_sha256", "energy_head_contract",
     )
     missing = [k for k in required if k not in saved]
     if missing:
         raise ValueError("critic checkpoint missing: " + ", ".join(missing))
+    if saved["energy_head_contract"] != "dedicated-scalar-lower-is-better-v1":
+        raise ValueError("critic energy-head contract mismatch")
     if saved["manifest_file_sha256"] != sha256_file(manifest):
         raise ValueError("critic checkpoint manifest SHA256 does not match current training manifest")
-    if (
-        dataset_content_sha256_value is not None
-        and saved["dataset_content_sha256"] != dataset_content_sha256_value
-    ):
+    if dataset_content_sha256_value is not None and saved["dataset_content_sha256"] != dataset_content_sha256_value:
         raise ValueError("critic checkpoint dataset-content SHA256 does not match current data")
     if not full_gate0_certificate:
         raise ValueError("critic validation requires full Gate 0 certificate")
     if saved["full_gate0_certificate_sha256"] != sha256_file(full_gate0_certificate):
         raise ValueError("critic checkpoint full Gate 0 certificate mismatch")
-
     saved_cfg = saved.get("config", {})
     if int(saved_cfg.get("image_size", -1)) != int(cfg["image_size"]):
         raise ValueError("critic checkpoint image_size does not match current run")
@@ -88,7 +73,6 @@ def validate_critic_checkpoint(
         raise ValueError("critic checkpoint normal_fraction does not match current run")
     if not _same_number(saved["normal_critic_weight"], normal_critic_weight):
         raise ValueError("critic checkpoint normal_critic_weight does not match current run")
-
     if expected_hparams:
         actual = saved.get("training_hparams", {})
         for key, expected in expected_hparams.items():
@@ -108,36 +92,22 @@ def validate_student_checkpoint(saved):
     if forbidden:
         raise ValueError(f"deployment checkpoint contains training-only state: {sorted(forbidden)}")
     required = (
-        "student",
-        "student_kind",
-        "student_width",
-        "seed",
-        "mode",
-        "effective_config",
-        "threshold_validation",
-        "manifest_file_sha256",
-        "dataset_content_sha256",
-        "training_view_dataset_sha256",
-        "gate0_certificate_sha256",
-        "full_gate0_certificate_sha256",
-        "student_init_sha256",
-        "inference_contract",
+        "student", "student_kind", "student_width", "seed", "mode", "effective_config",
+        "threshold_validation", "manifest_file_sha256", "dataset_content_sha256",
+        "training_view_dataset_sha256", "gate0_certificate_sha256",
+        "full_gate0_certificate_sha256", "student_init_sha256", "inference_contract",
     )
     missing = [k for k in required if k not in saved]
     if missing:
         raise ValueError("student checkpoint missing: " + ", ".join(missing))
-    if saved["student_kind"] not in {
-        "multiscale", "lightweight", "mobilenetv3", "dsunet", "fastscnn", "bisenet"
-    }:
+    if saved["student_kind"] not in {"multiscale", "lightweight", "mobilenetv3", "dsunet", "fastscnn", "bisenet"}:
         raise ValueError("student checkpoint has unknown student_kind")
     threshold = float(saved["threshold_validation"])
     if not 0.0 < threshold < 1.0:
         raise ValueError("student checkpoint threshold_validation must be in (0,1)")
     if saved["dataset_content_sha256"] != saved["training_view_dataset_sha256"]:
         raise ValueError("student checkpoint training-view dataset hash mismatch")
-    if saved["mode"] not in {
-        "control", "connected", "aosk", "aosk_connected"
-    }:
+    if saved["mode"] not in {"control", "connected", "aosk", "aosk_connected", "cldice", "adversarial"}:
         raise ValueError("student checkpoint mode is invalid")
     effective = saved["effective_config"]
     if effective.get("student_kind") != saved["student_kind"]:
