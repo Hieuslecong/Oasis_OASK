@@ -1,13 +1,11 @@
 #!/usr/bin/env python3
-"""Actual end-to-end CPU smoke for the v2.1 CLI.
+"""Actual disk/CLI smoke for OASIS-RC-v2.1-dev2.
 
-This is intentionally NOT a unit-test wrapper. It creates real PNG files and
-JSONL manifests on disk, issues Gate0 certificates through the production audit
-CLI, invokes the production v2.1 trainer in subprocesses for critic and S0-S3,
-then invokes the production v2.1 evaluator on the resulting deployment
-checkpoints. Canonical test is never created or opened; the only held-out split
-is named ``smoke_holdout`` and is used only to make the parent full-benchmark
-certificate structurally realistic.
+This is not a pytest wrapper. It creates real PNGs/manifests, issues Gate0
+certificates through the production audit CLI, trains a critic and all six arms
+for both N0 and N25, evaluates crack validation and N25 normal validation, and
+verifies the RGB-only deployment checkpoints. No canonical project test data is
+created or opened; ``smoke_holdout`` is synthetic and never evaluated.
 """
 from __future__ import annotations
 
@@ -37,35 +35,37 @@ def sha256(path):
     return h.hexdigest()
 
 
-def make_case(root: Path, index: int, split: str, size: int, rng: np.random.Generator):
-    # High-entropy texture prevents accidental Gate0 near-duplicate matches while
-    # preserving a strong RGB-mask relation that the critic can learn quickly.
+def _background(size, index, rng):
     yy, xx = np.mgrid[0:size, 0:size]
     base = rng.integers(18, 58, size=(size, size, 3), dtype=np.uint8)
     gradient = ((xx * (3 + index % 5) + yy * (1 + index % 3)) % 37).astype(np.uint8)
-    image = np.clip(base.astype(np.int16) + gradient[..., None], 0, 150).astype(np.uint8)
+    return np.clip(base.astype(np.int16) + gradient[..., None], 0, 150).astype(np.uint8)
 
+
+def make_crack_case(root, index, split, size, rng):
+    image = _background(size, index, rng)
     mask_img = Image.new("L", (size, size), 0)
     draw = ImageDraw.Draw(mask_img)
     x0 = 4 + (index * 7) % 13
     x1 = 18 + (index * 5) % 11
     x2 = 31 + (index * 3) % 12
-    x3 = 48 + (index * 2) % 10
+    x3 = min(size - 5, 48 + (index * 2) % 10)
     points = [
         (x0, 4),
-        (x1, 18 + index % 5),
-        (x2, 34 + (index * 2) % 7),
+        (x1, min(size - 5, 18 + index % 5)),
+        (x2, min(size - 5, 34 + (index * 2) % 7)),
         (x3, size - 5),
     ]
     draw.line(points, fill=255, width=2 + (index % 2))
-    # Add an asymmetric short branch so horizontal flips are never self-identical.
     bx, by = points[2]
-    draw.line([(bx, by), (min(size - 3, bx + 8 + index % 5), max(3, by - 7))], fill=255, width=2)
+    draw.line(
+        [(bx, by), (min(size - 3, bx + 8 + index % 5), max(3, by - 7))],
+        fill=255,
+        width=2,
+    )
     mask = np.asarray(mask_img, dtype=np.uint8) > 127
-
-    # Render the annotated crack as a bright image structure, with a mild halo.
     image[mask] = np.array([238, 244, 250], dtype=np.uint8)
-    halo = np.asarray(mask_img.resize((size, size), Image.Resampling.NEAREST), dtype=np.uint8) > 0
+    halo = np.asarray(mask_img, dtype=np.uint8) > 0
     for dy, dx in ((-1, 0), (1, 0), (0, -1), (0, 1)):
         shifted = np.roll(np.roll(halo, dy, axis=0), dx, axis=1)
         image[shifted & ~mask] = np.maximum(image[shifted & ~mask], 150)
@@ -78,14 +78,285 @@ def make_case(root: Path, index: int, split: str, size: int, rng: np.random.Gene
         "image": str(image_path.resolve()),
         "mask": str(mask_path.resolve()),
         "split": split,
-        "source_id": f"smoke_source_{index:04d}",
-        "lineage_id": f"smoke_lineage_{index:04d}",
+        "source_id": f"smoke_crack_source_{index:04d}",
+        "lineage_id": f"smoke_crack_lineage_{index:04d}",
         "is_normal": False,
     }
 
 
-def write_jsonl(path: Path, rows):
+def make_normal_case(root, index, split, size, rng):
+    image = _background(size, 10000 + index, rng)
+    # Add non-crack texture structures so normals are not trivial flat images.
+    yy, xx = np.mgrid[0:size, 0:size]
+    wave = (8.0 * np.sin((xx + 2 * yy + index) / 7.0))[..., None]
+    image = np.clip(image.astype(np.float32) + wave, 0, 180).astype(np.uint8)
+    path = root / "images" / f"{split}_{index:04d}.png"
+    Image.fromarray(image, mode="RGB").save(path)
+    return {
+        "image": str(path.resolve()),
+        "mask": None,
+        "split": split,
+        "source_id": "smoke_external_true_normal",
+        "lineage_id": f"smoke_normal_session_{index:04d}",
+        "is_normal": True,
+        "semantic_qc_status": "synthetic-known-empty",
+    }
+
+
+def write_jsonl(path, rows):
     path.write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows))
+
+
+def issue_gate0(py, repo, manifest, full_manifest, out, image_size, normal_policy):
+    full_gate = out / "gate0_full.json"
+    train_gate = out / "gate0_training.json"
+    run(
+        [
+            py,
+            "-m",
+            "oasis_cycle_aosk.audit",
+            "--manifest",
+            full_manifest,
+            "--test-split",
+            "smoke_holdout",
+            "--required-splits",
+            "train",
+            "val",
+            "smoke_holdout",
+            "--resize-size",
+            str(image_size),
+            "--normal-policy",
+            normal_policy,
+            "--certificate-out",
+            full_gate,
+            "--certificate-scope",
+            "full_benchmark",
+        ],
+        repo,
+    )
+    run(
+        [
+            py,
+            "-m",
+            "oasis_cycle_aosk.audit",
+            "--manifest",
+            manifest,
+            "--test-split",
+            "smoke_holdout",
+            "--required-splits",
+            "train",
+            "val",
+            "--resize-size",
+            str(image_size),
+            "--normal-policy",
+            normal_policy,
+            "--certificate-out",
+            train_gate,
+            "--certificate-scope",
+            "training_view",
+            "--parent-full-certificate",
+            full_gate,
+        ],
+        repo,
+    )
+    return full_gate, train_gate
+
+
+def run_protocol(
+    name,
+    rows,
+    out,
+    repo,
+    py,
+    config,
+    init,
+    image_size,
+    critic_epochs,
+    student_epochs,
+    normal_fraction,
+):
+    root = out / name
+    root.mkdir(parents=True, exist_ok=True)
+    keep = {"train", "val"}
+    if normal_fraction > 0:
+        keep |= {"normal_train", "normal_val"}
+    train_rows = [r for r in rows if r["split"] in keep]
+    full_manifest = root / "manifest_full.jsonl"
+    train_manifest = root / "manifest_trainval.jsonl"
+    write_jsonl(full_manifest, rows)
+    write_jsonl(train_manifest, train_rows)
+    policy = "train_and_aux_val" if normal_fraction > 0 else "none"
+    full_gate, train_gate = issue_gate0(
+        py, repo, train_manifest, full_manifest, root, image_size, policy
+    )
+
+    common = [
+        "--config",
+        config,
+        "--manifest",
+        train_manifest,
+        "--gate0-certificate",
+        train_gate,
+        "--full-gate0-certificate",
+        full_gate,
+        "--normal-fraction",
+        str(normal_fraction),
+        "--critic-epochs",
+        str(critic_epochs),
+        "--critic-width",
+        "8",
+        "--lr",
+        "0.003",
+        "--weight-decay",
+        "0.0",
+        "--determinism-mode",
+        "strict",
+    ]
+    critic_dir = root / "critic"
+    run(
+        [
+            py,
+            "-m",
+            "oasis_cycle_aosk.train_oasis_rc_v21",
+            *common,
+            "--out",
+            critic_dir,
+            "--mode",
+            "critic",
+        ],
+        repo,
+    )
+    critic_ckpt = critic_dir / "critic.pt"
+    if not critic_ckpt.exists():
+        raise RuntimeError(f"{name}: critic CLI completed without critic.pt")
+    qualification = json.loads((critic_dir / "critic_qualification_v21.json").read_text())
+    if qualification.get("pass") is not True:
+        raise RuntimeError(f"{name}: critic qualification did not pass")
+    if normal_fraction > 0 and qualification.get("normal_split") != "normal_val":
+        raise RuntimeError(f"{name}: N25 critic did not qualify on normal_val")
+
+    arms = {
+        "B0": "control",
+        "B1": "cldice",
+        "B2": "adversarial",
+        "S1": "connected",
+        "S2": "aosk",
+        "S3": "aosk_connected",
+    }
+    results = {}
+    init_hashes = set()
+    for arm, mode in arms.items():
+        arm_dir = root / arm
+        command = [
+            py,
+            "-m",
+            "oasis_cycle_aosk.train_oasis_rc_v21",
+            *common,
+            "--out",
+            arm_dir,
+            "--mode",
+            mode,
+            "--student-init-checkpoint",
+            init,
+            "--student-kind",
+            "mobilenetv3",
+            "--student-width",
+            "16",
+            "--epochs",
+            str(student_epochs),
+            "--warmup",
+            "0",
+            "--ramp-epochs",
+            "1",
+        ]
+        if mode in {"connected", "aosk_connected", "adversarial"}:
+            command += ["--critic-checkpoint", critic_ckpt]
+        run(command, repo)
+
+        checkpoint = arm_dir / "student_only.pt"
+        if not checkpoint.exists():
+            raise RuntimeError(f"{name}/{arm}: missing student_only.pt")
+        crack_eval = arm_dir / "eval_val.json"
+        run(
+            [
+                py,
+                "-m",
+                "oasis_cycle_aosk.evaluate_v21",
+                "--checkpoint",
+                checkpoint,
+                "--manifest",
+                train_manifest,
+                "--split",
+                "val",
+                "--device",
+                "cpu",
+                "--out",
+                crack_eval,
+                "--prediction-dir",
+                arm_dir / "predictions_val",
+            ],
+            repo,
+        )
+        evaluation = json.loads(crack_eval.read_text())
+        normal_eval = None
+        if normal_fraction > 0:
+            normal_path = arm_dir / "eval_normal_val.json"
+            run(
+                [
+                    py,
+                    "-m",
+                    "oasis_cycle_aosk.evaluate_v21",
+                    "--checkpoint",
+                    checkpoint,
+                    "--manifest",
+                    train_manifest,
+                    "--split",
+                    "normal_val",
+                    "--device",
+                    "cpu",
+                    "--out",
+                    normal_path,
+                ],
+                repo,
+            )
+            normal_eval = json.loads(normal_path.read_text())
+
+        import torch
+
+        ck = torch.load(checkpoint, map_location="cpu", weights_only=False)
+        init_hashes.add(ck.get("student_init_sha256"))
+        if ck.get("inference_contract") != "RGB -> crack logits only":
+            raise RuntimeError(f"{name}/{arm}: inference contract changed")
+        if ck.get("mode") != mode:
+            raise RuntimeError(f"{name}/{arm}: checkpoint mode mismatch")
+        results[arm] = {
+            "mode": mode,
+            "checkpoint_sha256": sha256(checkpoint),
+            "checkpoint_bytes": checkpoint.stat().st_size,
+            "threshold": evaluation["threshold"],
+            "dice": evaluation["dice"],
+            "iou": evaluation["iou"],
+            "cldice": evaluation["cldice"],
+            "precision": evaluation["precision"],
+            "recall": evaluation["recall"],
+            "normal_any_fp_rate": (
+                None if normal_eval is None else normal_eval["normal_any_fp_rate"]
+            ),
+            "normal_fp_pixels_mean": (
+                None if normal_eval is None else normal_eval["normal_fp_pixels_mean"]
+            ),
+        }
+
+    if len(init_hashes) != 1 or next(iter(init_hashes)) != sha256(init):
+        raise RuntimeError(f"{name}: six arms did not share exactly one initialization")
+    return {
+        "normal_fraction": normal_fraction,
+        "full_gate0": str(full_gate),
+        "training_gate0": str(train_gate),
+        "critic_checkpoint_sha256": sha256(critic_ckpt),
+        "critic_qualification": qualification,
+        "arms": results,
+    }
 
 
 def main():
@@ -97,6 +368,8 @@ def main():
     ap.add_argument("--train-samples", type=int, default=48)
     ap.add_argument("--val-samples", type=int, default=24)
     ap.add_argument("--holdout-samples", type=int, default=8)
+    ap.add_argument("--normal-train-samples", type=int, default=24)
+    ap.add_argument("--normal-val-samples", type=int, default=16)
     args = ap.parse_args()
 
     repo = Path(__file__).resolve().parents[1]
@@ -106,7 +379,7 @@ def main():
     (out / "masks").mkdir(exist_ok=True)
 
     rng = np.random.default_rng(1337)
-    rows = []
+    crack_rows = []
     cursor = 0
     for split, count in (
         ("train", args.train_samples),
@@ -114,13 +387,20 @@ def main():
         ("smoke_holdout", args.holdout_samples),
     ):
         for _ in range(count):
-            rows.append(make_case(out, cursor, split, args.image_size, rng))
+            crack_rows.append(make_crack_case(out, cursor, split, args.image_size, rng))
             cursor += 1
 
-    full_manifest = out / "manifest_full.jsonl"
-    train_manifest = out / "manifest_trainval.jsonl"
-    write_jsonl(full_manifest, rows)
-    write_jsonl(train_manifest, [r for r in rows if r["split"] in {"train", "val"}])
+    normal_rows = []
+    normal_cursor = 0
+    for split, count in (
+        ("normal_train", args.normal_train_samples),
+        ("normal_val", args.normal_val_samples),
+    ):
+        for _ in range(count):
+            normal_rows.append(
+                make_normal_case(out, normal_cursor, split, args.image_size, rng)
+            )
+            normal_cursor += 1
 
     config = out / "smoke_cpu_v21.yaml"
     config.write_text(
@@ -139,167 +419,73 @@ def main():
     py = sys.executable
     env = os.environ.copy()
     env["PYTHONPATH"] = str(repo / "src") + os.pathsep + env.get("PYTHONPATH", "")
-
-    # subprocess.run above inherits the current environment, so set PYTHONPATH
-    # for all subsequent CLI invocations in this process.
     os.environ.update(env)
-
-    full_gate = out / "gate0_full.json"
-    train_gate = out / "gate0_training.json"
-    run(
-        [
-            py, "-m", "oasis_cycle_aosk.audit",
-            "--manifest", full_manifest,
-            "--test-split", "smoke_holdout",
-            "--required-splits", "train", "val", "smoke_holdout",
-            "--resize-size", str(args.image_size),
-            "--normal-policy", "none",
-            "--certificate-out", full_gate,
-            "--certificate-scope", "full_benchmark",
-        ],
-        repo,
-    )
-    run(
-        [
-            py, "-m", "oasis_cycle_aosk.audit",
-            "--manifest", train_manifest,
-            "--test-split", "smoke_holdout",
-            "--required-splits", "train", "val",
-            "--resize-size", str(args.image_size),
-            "--normal-policy", "none",
-            "--certificate-out", train_gate,
-            "--certificate-scope", "training_view",
-            "--parent-full-certificate", full_gate,
-        ],
-        repo,
-    )
 
     init = out / "student_init.pt"
     run(
         [
-            py, repo / "scripts" / "create_student_init.py",
-            "--out", init,
-            "--seed", "1337",
-            "--student-kind", "mobilenetv3",
-            "--student-width", "16",
+            py,
+            repo / "scripts" / "create_student_init.py",
+            "--out",
+            init,
+            "--seed",
+            "1337",
+            "--student-kind",
+            "mobilenetv3",
+            "--student-width",
+            "16",
         ],
         repo,
     )
 
-    critic_dir = out / "critic"
-    common = [
-        "--config", config,
-        "--manifest", train_manifest,
-        "--gate0-certificate", train_gate,
-        "--full-gate0-certificate", full_gate,
-        "--normal-fraction", "0.0",
-        "--critic-epochs", str(args.critic_epochs),
-        "--critic-width", "8",
-        "--lr", "0.003",
-        "--weight-decay", "0.0",
-        "--determinism-mode", "strict",
-    ]
-    run(
-        [py, "-m", "oasis_cycle_aosk.train_oasis_rc_v21", *common, "--out", critic_dir, "--mode", "critic"],
-        repo,
-    )
-    critic_ckpt = critic_dir / "critic.pt"
-    if not critic_ckpt.exists():
-        raise RuntimeError("critic CLI completed without critic.pt")
-
-    arms = {
-        "S0": "control",
-        "S1": "connected",
-        "S2": "aosk",
-        "S3": "aosk_connected",
-    }
-    results = {}
-    init_hashes = set()
-    for arm, mode in arms.items():
-        arm_dir = out / arm
-        command = [
-            py, "-m", "oasis_cycle_aosk.train_oasis_rc_v21",
-            *common,
-            "--out", arm_dir,
-            "--mode", mode,
-            "--student-init-checkpoint", init,
-            "--student-kind", "mobilenetv3",
-            "--student-width", "16",
-            "--epochs", str(args.student_epochs),
-            "--warmup", "0",
-            "--ramp-epochs", "1",
-        ]
-        if mode in {"connected", "aosk_connected"}:
-            command += ["--critic-checkpoint", critic_ckpt]
-        run(command, repo)
-
-        checkpoint = arm_dir / "student_only.pt"
-        if not checkpoint.exists():
-            raise RuntimeError(f"{arm} CLI completed without student_only.pt")
-        eval_path = arm_dir / "eval_val.json"
-        prediction_dir = arm_dir / "predictions_val"
-        run(
-            [
-                py, "-m", "oasis_cycle_aosk.evaluate_v21",
-                "--checkpoint", checkpoint,
-                "--manifest", train_manifest,
-                "--split", "val",
-                "--device", "cpu",
-                "--out", eval_path,
-                "--prediction-dir", prediction_dir,
-            ],
+    protocols = {
+        "N0": run_protocol(
+            "N0",
+            crack_rows,
+            out,
             repo,
-        )
-        evaluation = json.loads(eval_path.read_text())
-        # Read only metadata using torch here after the CLI has produced a real checkpoint.
-        import torch
-        ck = torch.load(checkpoint, map_location="cpu", weights_only=False)
-        init_hashes.add(ck.get("student_init_sha256"))
-        if ck.get("inference_contract") != "RGB -> crack logits only":
-            raise RuntimeError(f"{arm} inference contract changed")
-        if ck.get("mode") != mode:
-            raise RuntimeError(f"{arm} checkpoint mode mismatch")
-        results[arm] = {
-            "mode": mode,
-            "checkpoint_sha256": sha256(checkpoint),
-            "checkpoint_bytes": checkpoint.stat().st_size,
-            "threshold": evaluation["threshold"],
-            "dice": evaluation["dice"],
-            "iou": evaluation["iou"],
-            "cldice": evaluation["cldice"],
-            "precision": evaluation["precision"],
-            "recall": evaluation["recall"],
-            "image_count": evaluation["image_count"],
-        }
-
-    if len(init_hashes) != 1 or next(iter(init_hashes)) != sha256(init):
-        raise RuntimeError("S0-S3 did not share exactly one student initialization")
-
-    qualification = json.loads((critic_dir / "critic_qualification_v21.json").read_text())
-    if qualification.get("pass") is not True:
-        raise RuntimeError("critic qualification did not pass despite critic CLI success")
+            py,
+            config,
+            init,
+            args.image_size,
+            args.critic_epochs,
+            args.student_epochs,
+            0.0,
+        ),
+        "N25": run_protocol(
+            "N25",
+            crack_rows + normal_rows,
+            out,
+            repo,
+            py,
+            config,
+            init,
+            args.image_size,
+            args.critic_epochs,
+            args.student_epochs,
+            0.25,
+        ),
+    }
+    expected_arms = {"B0", "B1", "B2", "S1", "S2", "S3"}
+    for name, result in protocols.items():
+        if set(result["arms"]) != expected_arms:
+            raise RuntimeError(f"{name}: incomplete six-arm smoke")
 
     summary = {
         "status": "PASS",
-        "kind": "actual-cli-integration-smoke",
-        "implementation": "OASIS-RC-v2.1",
+        "kind": "actual-cli-integration-smoke-dev2",
+        "implementation": "OASIS-RC-v2.1-dev2",
         "device": "cpu",
         "image_size": args.image_size,
-        "train_samples": args.train_samples,
-        "val_samples": args.val_samples,
-        "smoke_holdout_samples": args.holdout_samples,
-        "critic_epochs": args.critic_epochs,
-        "student_epochs": args.student_epochs,
         "student_kind": "mobilenetv3",
         "shared_student_init_sha256": sha256(init),
-        "critic_checkpoint_sha256": sha256(critic_ckpt),
-        "critic_qualification": qualification,
-        "arms": results,
+        "protocols": protocols,
         "canonical_test_created": False,
         "canonical_test_opened": False,
+        "synthetic_smoke_holdout_evaluated": False,
     }
     (out / "ACTUAL_SMOKE_SUMMARY.json").write_text(json.dumps(summary, indent=2))
-    print("ACTUAL_V21_SMOKE_RESULT=" + json.dumps(summary, sort_keys=True), flush=True)
+    print("ACTUAL_V21_DEV2_SMOKE_RESULT=" + json.dumps(summary, sort_keys=True), flush=True)
 
 
 if __name__ == "__main__":
