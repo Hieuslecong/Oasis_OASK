@@ -23,14 +23,28 @@ def sha256_file(path):
 
 
 def git_provenance(repo_root):
+    """Return HEAD while failing closed on tracked source mutations.
+
+    Experiment runners legitimately create untracked outputs (datasets,
+    checkpoints, metrics) inside the checkout. Those files must not invalidate
+    source provenance. Modified/staged/deleted *tracked* files still fail the
+    contract, and a readable 40-character Git HEAD remains mandatory.
+    """
     try:
         head = subprocess.check_output(
             ["git", "-C", str(repo_root), "rev-parse", "HEAD"],
             text=True,
             stderr=subprocess.STDOUT,
         ).strip()
-        status = subprocess.check_output(
-            ["git", "-C", str(repo_root), "status", "--porcelain"],
+        tracked_status = subprocess.check_output(
+            [
+                "git",
+                "-C",
+                str(repo_root),
+                "status",
+                "--porcelain",
+                "--untracked-files=no",
+            ],
             text=True,
             stderr=subprocess.STDOUT,
         ).strip()
@@ -38,9 +52,9 @@ def git_provenance(repo_root):
         raise RuntimeError("shared initialization requires readable git provenance") from exc
     if len(head) != 40:
         raise RuntimeError(f"invalid git HEAD {head!r}")
-    if status:
+    if tracked_status:
         raise RuntimeError(
-            "shared initialization requires a clean git worktree; commit/freeze changes first"
+            "shared initialization requires clean tracked source files; commit/freeze changes first"
         )
     return head
 
@@ -67,7 +81,8 @@ def main():
         "seed": args.seed,
         "torch_version": torch.__version__,
         "git_head": head,
-        "git_dirty": False,
+        "git_tracked_dirty": False,
+        "untracked_experiment_outputs_allowed": True,
     }
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
