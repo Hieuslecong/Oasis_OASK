@@ -18,6 +18,7 @@ from oasis_rc_v2.checkpoint import (
     EXPERIMENT_ID,
     IMPLEMENTATION_VERSION,
     METHOD_VERSION,
+    TRAINER_CONTRACT,
     sha256_file,
     validate_critic_checkpoint,
 )
@@ -37,7 +38,7 @@ from oasis_rc_v2.losses import (
     segmentation_loss,
 )
 from oasis_rc_v2.protocol import verify_gate0_certificate
-from oasis_rc_v2.qualification import connected_gate_failures
+from oasis_rc_v2.qualification import connected_gate_failures, relation_energy_gate_failures
 from .aosk import oriented_consistency_loss
 from .topology_loss import centerline_cldice_loss
 from .train_oasis_rc_v2 import (
@@ -314,6 +315,61 @@ def energy_qualification(critic, loader, device, margin):
     )
 
 
+@torch.no_grad()
+def normal_donor_energy_qualification(
+    critic, crack_loader, normal_loader, device, margin, max_donors=64
+):
+    """Qualify C8 crack-on-normal relation energy on held-out normal images.
+
+    Donor masks come only from crack ``val`` and use deterministic reservoir
+    sampling capped on CPU to keep this diagnostic representative and memory
+    bounded. No normal training rows or canonical test material are opened.
+    """
+    donors = []
+    seen = 0
+    reservoir = torch.Generator(device="cpu").manual_seed(99175)
+    for batch in crack_loader:
+        _, y, _ = _unpack(batch)
+        crack = (y[y.flatten(1).sum(1) > 0] > 0.5).to(torch.uint8).cpu()
+        for row in crack:
+            seen += 1
+            if len(donors) < int(max_donors):
+                donors.append(row.clone())
+                continue
+            slot = int(torch.randint(0, seen, (1,), generator=reservoir).item())
+            if slot < int(max_donors):
+                donors[slot] = row.clone()
+    if not donors:
+        return {"energy_samples": 0, "energy_finite": False}
+
+    donor_bank = torch.stack(donors, dim=0)
+    trajectories = []
+    levels = (0.0, 0.25, 0.5, 0.75, 1.0)
+    offset = 0
+    for batch in normal_loader:
+        x, y, _ = _unpack(batch)
+        if bool((y.flatten(1).sum(1) > 0).any()):
+            raise RuntimeError("normal_val contains non-empty target during C8 qualification")
+        x, y = x.to(device), y.to(device)
+        n = int(y.shape[0])
+        if n == 0:
+            continue
+        ids = (torch.arange(n) + offset) % int(donor_bank.shape[0])
+        wrong = donor_bank[ids].to(device=device, dtype=y.dtype)
+        offset += n
+        trajectories.append(
+            relation_energy_trajectory(
+                critic, x, y, wrong, t_values=levels
+            ).detach().cpu()
+        )
+    if not trajectories:
+        return {"energy_samples": 0, "energy_finite": False}
+    all_energies = torch.cat(trajectories, dim=0)
+    return summarize_energy_trajectories(
+        all_energies, t_values=levels, margin=margin
+    )
+
+
 def _validate_loaded_critic(saved, args, cfg):
     return validate_critic_checkpoint(
         saved,
@@ -364,9 +420,30 @@ def qualify_critic(critic, args, cfg, device, out):
     representation["normal_diagnostic_split"] = normal_split
     energy = energy_qualification(critic, val_loader, device, args.path_margin)
     failures = connected_gate_failures(representation, energy)
+    normal_texture_energy = None
+    normal_donor_energy = None
+    if normal_loader is not None:
+        # C9: texture-guided false positives generated directly on held-out normals.
+        normal_texture_energy = energy_qualification(
+            critic, normal_loader, device, args.path_margin
+        )
+        # C8: crack-shaped false positives placed on held-out normal RGB using
+        # crack masks from validation as deterministic donors.
+        normal_donor_energy = normal_donor_energy_qualification(
+            critic, val_loader, normal_loader, device, args.path_margin
+        )
+        for prefix, metrics in (
+            ("normal_texture_", normal_texture_energy),
+            ("normal_donor_", normal_donor_energy),
+        ):
+            failures.extend(
+                prefix + item for item in relation_energy_gate_failures(metrics)
+            )
     report = {
         "classification": representation,
         "energy": energy,
+        "normal_texture_energy": normal_texture_energy,
+        "normal_donor_energy": normal_donor_energy,
         "normal_split": normal_split,
         "failures": failures,
         "pass": not failures,
@@ -552,6 +629,7 @@ def train_student(args, cfg, device, out, critic=None):
     effective = {
         "method_version": METHOD_VERSION,
         "implementation_version": IMPLEMENTATION_VERSION,
+        "trainer_contract": TRAINER_CONTRACT,
         "seed": seed,
         "image_size": int(cfg["image_size"]),
         "batch_size": int(cfg["batch_size"]),
@@ -585,6 +663,7 @@ def train_student(args, cfg, device, out, critic=None):
         "experiment_id": EXPERIMENT_ID,
         "method_version": METHOD_VERSION,
         "implementation_version": IMPLEMENTATION_VERSION,
+        "trainer_contract": TRAINER_CONTRACT,
         "seed": seed,
         "student": student.state_dict(),
         "student_kind": args.student_kind,
@@ -624,7 +703,7 @@ def parser():
     p.add_argument("--normal-fraction", type=float, choices=(0.0, 0.25), default=0.0)
     p.add_argument("--normal-critic-weight", type=float, default=1.0)
     p.add_argument("--critic-epochs", type=int, default=10)
-    p.add_argument("--epochs", type=int, default=12)
+    p.add_argument("--epochs", type=int, default=100)
     p.add_argument("--warmup", type=int, default=4)
     p.add_argument("--ramp-epochs", type=int, default=3)
     p.add_argument("--critic-width", type=int, default=8)
