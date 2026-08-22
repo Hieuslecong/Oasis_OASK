@@ -1,12 +1,13 @@
 # OASIS-RC-v2.1 crack segmentation
 
-Compact research implementation of **OASIS-RC-v2.1-dev2** for training lightweight RGB-only crack-segmentation models with training-only relational and orientation-aware supervision.
+Compact research implementation of **OASIS-RC-v2.1-dev3** for training lightweight RGB-only crack-segmentation models with training-only relational and orientation-aware supervision.
 
 ```text
 method_version         = OASIS-RC-v2.1
-implementation_version = 2.1.0-dev2
+implementation_version = 2.1.0-dev3
 checkpoint_schema      = 5
 experiment_id          = oasis-rc-v2.1-gt-anchored-relational-energy-head
+trainer_contract       = oasis-rc-v21-canonical-v1
 ```
 
 Scientific source of truth: `METHOD_SPEC_V2_1.md`  
@@ -42,7 +43,7 @@ B2 is a frozen pair-critic ablation, not conventional jointly-trained adversaria
 
 **N0:** no external normal supervision; certified native-empty rows may remain internal true negatives.
 
-**N25:** external true-normal RGB occupies 25% of the training batch budget. Normal data must be lineage-disjoint across `normal_train`, `normal_val`, and `normal_test`. Critic qualification for N25 uses held-out `normal_val`, never `normal_train` as a fallback.
+**N25:** external true-normal RGB occupies 25% of the training batch budget. Normal data must be lineage-disjoint across `normal_train`, `normal_val`, and `normal_test`. Critic qualification for N25 uses held-out `normal_val`, never `normal_train` as a fallback. Dev3 additionally requires relation-energy PASS for both C9 texture-guided false positives and C8 crack-donor false positives on held-out normal RGB.
 
 Prepare the canonical benchmark and training views with:
 
@@ -63,10 +64,10 @@ Canonical order:
 ```text
 Gate0
 -> CUDA preflight
--> shared student initialization
+-> shared random student initialization
 -> B0/S0 baseline
 -> critic training
--> representation + relation-energy qualification
+-> representation + crack/normal relation-energy qualification
 -> trained-S0 RC gradient/energy diagnostic
 -> freeze auxiliary weights
 -> B0/B1/B2/S1/S2/S3
@@ -86,7 +87,9 @@ export LINEAGE_REGEX='...'
 bash scripts/run_training_ready_v21.sh
 ```
 
-Development critic gates are fail-closed. At minimum: valid-crack recall `>=0.80`, invalid recall `>=0.90`, RGB/mask pair drops `>=0.05`, minimum required-corruption recall `>=0.70`, at least 16 samples per required corruption, positive energy-gap fraction `>=0.70`, continuous path-order fraction `>=0.65`, mean/median energy gap `>0`, at least 16 energy samples, and finite energies. Do not lower gates to obtain a PASS.
+The dev3 student default is **100 epochs** with best-validation checkpoint selection. This is a development budget, not a claimed optimum; the confirmatory budget must be frozen after convergence is inspected on development seed 1337 only. All paired arms then use the same frozen budget.
+
+Development critic gates are fail-closed. At minimum: valid-crack recall `>=0.80`, invalid recall `>=0.90`, RGB/mask pair drops `>=0.05`, minimum required-corruption recall `>=0.70`, at least 16 samples per required corruption, positive energy-gap fraction `>=0.70`, continuous path-order fraction `>=0.65`, mean/median energy gap `>0`, at least 16 energy samples, and finite energies. N25 applies the same energy criteria to C9 normal-texture and C8 normal-donor trajectories. Do not lower gates to obtain a PASS.
 
 ## Evaluation and statistics
 
@@ -98,11 +101,11 @@ Confirmatory inference uses the training seed as the sampling unit. Canonical co
 2027  31415  42421  51511  62617
 ```
 
-The immutable final bundle requires all six arms for all five seeds, frozen thresholds, exact data/spec/protocol/evaluator hashes, paired initialization/training-view provenance and one frozen Git commit.
+The immutable final bundle requires all six arms for all five seeds, frozen thresholds, exact data/spec/protocol/evaluator hashes, paired initialization/training-view provenance and one frozen Git commit. Exact sign-flip p-values remain secondary because five paired seeds give a coarse discrete null distribution.
 
 ## Verification policy
 
-**Testing is local/external; GitHub is source storage only.** No GitHub Actions workflow or repository-resident synthetic smoke harness is required for the research package.
+**Testing is local/external; GitHub is source storage only.** GitHub is not used as the scientific execution environment.
 
 Before source is stored, run local checks in the execution environment, for example:
 
