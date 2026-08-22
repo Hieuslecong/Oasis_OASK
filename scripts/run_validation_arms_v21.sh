@@ -16,7 +16,7 @@ CRITIC="${CRITIC:?set CRITIC}"
 NORMAL_FRACTION="${NORMAL_FRACTION:?set NORMAL_FRACTION}"
 STUDENT_KIND="${STUDENT_KIND:-mobilenetv3}"
 STUDENT_WIDTH="${STUDENT_WIDTH:-16}"
-EPOCHS="${EPOCHS:-12}"
+EPOCHS="${EPOCHS:-100}"
 WARMUP="${WARMUP:-4}"
 RAMP="${RAMP:-3}"
 DETERMINISM_MODE="${DETERMINISM_MODE:-strict}"
@@ -40,9 +40,6 @@ run_arm() {
     --student-init-checkpoint "$STUDENT_INIT" "$@" 2>&1 | tee "$out/train.log"
 }
 
-# B0 may already exist because run_training_ready_v21.sh trains it first for the
-# S0-manifold diagnostic. Reuse is allowed only when that parent launcher has
-# explicitly provided the same checkpoint path; standalone runs retrain B0.
 B0_DIR="${B0_DIR:-$ARM_ROOT/B0}"
 if [ "${REUSE_VALIDATED_B0:-0}" = "1" ] && [ -f "$B0_DIR/student_only.pt" ]; then
   printf 'REUSE_VALIDATED_B0=%s\n' "$B0_DIR/student_only.pt"
@@ -50,8 +47,6 @@ else
   run_arm B0 control
 fi
 run_arm B1_cldice cldice --lambda-cldice "${LAMBDA_CLDICE:-0.1}"
-# Internal mode name 'adversarial' is retained for checkpoint compatibility;
-# scientifically this arm is a frozen pretrained pair-critic ablation.
 run_arm B2_frozen_pair adversarial --lambda-adversarial "${LAMBDA_FROZEN_PAIR:-${LAMBDA_ADVERSARIAL:-0.001}}" --critic-checkpoint "$CRITIC"
 run_arm S1_rc connected --lambda-oasis "${LAMBDA_OASIS:-0.001}" --critic-checkpoint "$CRITIC"
 run_arm S2_aosk aosk --lambda-aosk "${LAMBDA_AOSK:-0.01}"
