@@ -3,9 +3,10 @@ from pathlib import Path
 
 EXPERIMENT_ID = "oasis-rc-v2.1-gt-anchored-relational-energy-head"
 CHECKPOINT_SCHEMA = 5
-IMPLEMENTATION_VERSION = "2.1.0-dev2"
+IMPLEMENTATION_VERSION = "2.1.0-dev3"
 METHOD_VERSION = "OASIS-RC-v2.1"
 ENERGY_HEAD_CONTRACT = "dedicated-scalar-lower-is-better-v1"
+TRAINER_CONTRACT = "oasis-rc-v21-canonical-v1"
 CRITIC_COMPATIBILITY_KEYS = (
     "energy_head_contract",
     "mask_variant_contract",
@@ -135,11 +136,13 @@ def validate_student_checkpoint(saved):
         "effective_config", "threshold_validation", "manifest_file_sha256",
         "dataset_content_sha256", "training_view_dataset_sha256",
         "gate0_certificate_sha256", "full_gate0_certificate_sha256",
-        "student_init_sha256", "inference_contract",
+        "student_init_sha256", "inference_contract", "trainer_contract",
     )
     missing = [k for k in required if k not in saved]
     if missing:
         raise ValueError("student checkpoint missing: " + ", ".join(missing))
+    if saved["trainer_contract"] != TRAINER_CONTRACT:
+        raise ValueError("student checkpoint trainer contract mismatch; legacy v2 entrypoint rejected")
     if saved["student_kind"] not in {
         "multiscale", "lightweight", "mobilenetv3", "dsunet", "fastscnn", "bisenet",
     }:
