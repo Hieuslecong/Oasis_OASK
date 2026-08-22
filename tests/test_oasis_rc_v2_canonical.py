@@ -12,6 +12,7 @@ from oasis_rc_v2.checkpoint import (
     EXPERIMENT_ID,
     IMPLEMENTATION_VERSION,
     METHOD_VERSION,
+    TRAINER_CONTRACT,
     validate_student_checkpoint,
 )
 from oasis_rc_v2.corruptions import CORRUPTION_NAMES, make_corrupted_mask
@@ -226,6 +227,7 @@ def test_student_checkpoint_rejects_legacy_and_wrong_implementation():
         "full_gate0_certificate_sha256": "d" * 64,
         "student_init_sha256": "e" * 64,
         "inference_contract": "RGB -> crack logits only",
+        "trainer_contract": TRAINER_CONTRACT,
     }
     validate_student_checkpoint(good)
     bad = dict(good)
