@@ -101,7 +101,7 @@ Canonical student loss:
 5. Connected arms are forbidden unless both critic representation qualification and relation-energy usability qualification pass.
 6. Critic consumers must declare the complete v2.1 scientific compatibility contract; historical optimizer settings are provenance rather than student-run compatibility requirements.
 7. Every v2.1 critic-consuming launch must re-run qualification from the currently loaded critic weights. A stored `qualification_v21.pass` is provenance, not sole authorization.
-8. Legacy v2.0.4 entrypoints must not be capable of creating v2.1 connected-arm evidence.
+8. Deployment checkpoints accepted as v2.1 evidence must carry the canonical v2.1 trainer contract; legacy v2.0.4 entrypoints must not be capable of creating accepted v2.1 evidence.
 
 ## 6. Critic calibration and qualification
 
@@ -121,17 +121,19 @@ At minimum the report must include:
 
 Development thresholds are frozen before confirmatory runs. Canonical test data must not be used to set them.
 
-For N25, critic qualification must use `normal_val`; falling back to the normal training rows is not admissible.
+For N25, qualification must use held-out `normal_val`; falling back to normal training rows is not admissible. In addition to representation diagnostics, relation energy must pass on two explicit false-positive trajectories: **C9 texture-guided false positives on normal RGB**, and **C8 crack-shaped donor masks placed on normal RGB**. C8 donor masks are sampled only from crack-positive `val` masks by deterministic reservoir sampling capped at 64 masks; no `normal_train`, `test`, or `normal_test` material is used. Both normal-energy reports use the same frozen development energy thresholds as crack validation and fail closed.
 
-## 7. Auxiliary-weight calibration
+## 7. Auxiliary-weight calibration and training budget
 
 Parser defaults are development starting points, not confirmatory evidence. Before confirmatory seeds, each auxiliary coefficient must be calibrated using the development seed only under one declared rule and then frozen.
 
 The repository must log both raw and lambda-weighted gradient contribution. Gradient magnitude is a sanity/strength diagnostic, not a requirement that heterogeneous objectives have identical norms. Calibration must consider at least effective gradient contribution, validation response, instability/non-finiteness, and degradation of the primary segmentation objective. No coefficient may be changed after confirmatory runs begin.
 
+The canonical student is randomly initialized from one seed-matched shared initialization per arm comparison; it does not rely on ImageNet pretraining. To avoid treating an under-converged student as scientific evidence, dev3 raises the **development default** student budget from 12 to 100 epochs while retaining best-validation checkpoint selection. The final confirmatory epoch budget must be frozen after inspecting convergence on development seed 1337 only and must then remain identical across paired arms. A larger budget is not itself a claim of improvement.
+
 ## 8. AOSK v2 claim boundary
 
-Canonical dev2 AOSK is `structure-tensor-steered-v2`:
+Canonical dev3 AOSK remains `structure-tensor-steered-v2`:
 
 - local RGB gradients form the 2x2 structure tensor using `Jxx`, `Jyy`, and the cross-term `Jxy`;
 - the principal gradient-normal orientation is converted to a tangent direction;
@@ -182,10 +184,11 @@ Development seed 1337 is excluded from confirmatory evidence after any tuning. C
 ## 12. Version identity
 
 - Method: `OASIS-RC-v2.1`
-- Implementation: `2.1.0-dev2`
+- Implementation: `2.1.0-dev3`
 - Checkpoint schema: `5`
 - Experiment family: `oasis-rc-v2.1-gt-anchored-relational-energy-head`
+- Canonical student trainer contract: `oasis-rc-v21-canonical-v1`
 
-`dev2` is a hardening revision: it keeps the OASIS-RC relation-energy hypothesis while strengthening N25 contracts, critic authorization, arbitrary-angle AOSK, evaluation separation, final-test control, gradient instrumentation, and confirmatory statistics.
+`dev3` is a compact hardening revision. It does not add inference modules or alter the RC/AOSK scientific hypothesis. It closes legacy-checkpoint identity ambiguity, requires N25 relation-energy authorization on both texture-guided and crack-donor false positives, and prevents the default random-initialized student run from stopping after only 12 epochs.
 
 A future confirmatory release must replace the development implementation version only after real-data N0/N25 execution, lambda calibration/freeze, all six arms, evaluation protocol, statistical plan, and the final-test bundle are frozen and verified.
