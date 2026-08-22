@@ -1,7 +1,7 @@
 {
-  "schema": "oasis-rc-v2.1-protocol-v4",
+  "schema": "oasis-rc-v2.1-protocol-v5",
   "method_version": "OASIS-RC-v2.1",
-  "implementation_version": "2.1.0-dev2",
+  "implementation_version": "2.1.0-dev3",
   "checkpoint_schema": 5,
   "method_spec": "METHOD_SPEC_V2_1.md",
   "metric_spec": "METRIC_SPEC_V2_1.md",
@@ -25,6 +25,12 @@
     "eps": 1e-8,
     "grad_clip_norm": 5.0
   },
+  "training_budget": {
+    "student_epochs_development_default": 100,
+    "critic_epochs_development_default": 10,
+    "shared_fixed_student_budget_across_arms": true,
+    "checkpoint_selection": "max-validation-micro-dice"
+  },
   "critic": {
     "width": 8,
     "representation_loss": "0.5*(clean+corrupt)+rgb-shuffle-pair-only+optional-normal-donor",
@@ -45,6 +51,9 @@
     "qualification": {
       "classification_gate_required": true,
       "energy_gate_required": true,
+      "n25_normal_texture_energy_gate_required": true,
+      "n25_normal_donor_energy_gate_required": true,
+      "n25_normal_donor_source": "deterministic reservoir sample of crack-positive val masks; max 64; never normal_train/test",
       "current_weights_requalification_required_for_every_critic_consumer": true,
       "stored_qualification_is_provenance_not_sole_authorization": true,
       "normal_fraction_positive_requires_normal_val": true,
