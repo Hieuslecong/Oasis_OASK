@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fail-closed v2.1-dev2 CUDA/data/backward preflight on real training rows."""
+"""Fail-closed v2.1-dev3 CUDA/data/backward preflight on real training rows."""
 from __future__ import annotations
 
 import argparse
@@ -217,7 +217,7 @@ def main():
 
     report = {
         "status": "PASS",
-        "method": "OASIS-RC-v2.1-dev2",
+        "method": "OASIS-RC-v2.1-dev3",
         "python": platform.python_version(),
         "torch": torch.__version__,
         "torch_cuda": torch.version.cuda,
