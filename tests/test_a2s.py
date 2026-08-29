@@ -1,4 +1,9 @@
+import json
+from types import SimpleNamespace
+
+import numpy as np
 import torch
+from PIL import Image
 
 from oasis_cycle_aosk.a2s import (
     FAKE_CLASS,
@@ -17,7 +22,7 @@ from oasis_cycle_aosk.a2s import (
     transfer_to_segmenter,
 )
 from oasis_cycle_aosk.evaluate_a2s import _verify_manifest_provenance
-from oasis_cycle_aosk.train_a2s import _assert_dev_split, _sha256_json, build_parser
+from oasis_cycle_aosk.train_a2s import _assert_dev_split, _sha256_json, build_parser, run
 
 
 def toy(batch=2, size=32):
@@ -137,15 +142,8 @@ def test_models_are_compact():
 
 def test_development_firewall_rejects_semantic_test_tokens():
     forbidden = (
-        "test",
-        "final",
-        "holdout",
-        "external_test",
-        "final_test",
-        "final_external",
-        "test_2026",
-        "external-final",
-        "holdout_v2",
+        "test", "final", "holdout", "external_test", "final_test",
+        "final_external", "test_2026", "external-final", "holdout_v2",
         "evaluation_test",
     )
     for name in forbidden:
@@ -213,10 +211,36 @@ def test_one_optimizer_step_changes_expected_network_only():
 
 def test_stage2_checkpoint_contract_contains_no_training_only_network():
     s = transfer_to_segmenter(OASISA2SDiscriminator(8, 3))
-    ck = {
-        "method": "OASIS-A2S-v0.1",
-        "arm": "A2",
-        "segmenter": s.state_dict(),
-        "generator_in_checkpoint": False,
-    }
+    ck = {"method": "OASIS-A2S-v0.1", "arm": "A2", "segmenter": s.state_dict(), "generator_in_checkpoint": False}
     assert not ({"generator", "discriminator", "critic", "aosk"} & set(ck))
+
+
+def test_end_to_end_tiny_gate1_smoke(tmp_path):
+    rows = []
+    for i, split in enumerate(("train", "train", "val")):
+        image = np.zeros((16, 16, 3), dtype=np.uint8)
+        mask = np.zeros((16, 16), dtype=np.uint8)
+        mask[3:13, 7:9] = 255
+        image[..., 0] = mask
+        ip = tmp_path / f"i{i}.png"
+        mp = tmp_path / f"m{i}.png"
+        Image.fromarray(image).save(ip)
+        Image.fromarray(mask).save(mp)
+        rows.append({"image": str(ip), "mask": str(mp), "split": split, "is_normal": False})
+    manifest = tmp_path / "manifest.jsonl"
+    manifest.write_text("\n".join(json.dumps(r) for r in rows) + "\n")
+    out = tmp_path / "run"
+    args = SimpleNamespace(
+        manifest=str(manifest), out=str(out), train_split="train", val_split="val",
+        size=16, batch=1, workers=0, device="cpu", seed=1337, width=4,
+        generator_width=4, noise_channels=2, stage1_epochs=1, stage2_epochs=1,
+        lr_d=4e-4, lr_g=1e-4, stage2_lr=2e-4, lambda_labelmix=10.0,
+        dice_weight=1.0, allow_nondeterministic=False, allow_dirty=True,
+    )
+    result = run(args)
+    assert set(result["arms"]) == {"A0", "A1", "A2"}
+    assert (out / "a0_supervised.pt").exists()
+    assert (out / "stage1_oasis.pt").exists()
+    assert (out / "a2_transferred.pt").exists()
+    assert (out / "results.json").exists()
+    assert len(result["provenance"]["config_sha256"]) == 64
