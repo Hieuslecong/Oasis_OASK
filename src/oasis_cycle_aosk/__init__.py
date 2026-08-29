@@ -1,1 +1,1 @@
-"""OASIS-CycleAOSK: training-only counterfactual supervision."""
+"""OASIS-A2S research package; legacy OASIS-RC modules remain for comparison only."""
