@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "oasis-a2s-crack-segmentation"
-version = "0.1.2"
+version = "0.1.3"
 description = "OASIS-A2S semantic-adversarial pretraining and discriminator-to-segmenter transfer for crack segmentation"
 requires-python = ">=3.10"
 dependencies = [
@@ -12,6 +12,7 @@ dependencies = [
   "numpy>=1.26",
   "Pillow>=10",
   "PyYAML>=6",
+  "scikit-image>=0.22",
 ]
 
 [project.optional-dependencies]
