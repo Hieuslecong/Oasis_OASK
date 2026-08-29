@@ -1,0 +1,28 @@
+{
+  "method": "OASIS-A2S-v0.1",
+  "implementation_revision": "0.1.2",
+  "development_protocol": ["FIT", "CAL", "VAL"],
+  "test_firewall": "closed",
+  "stage1_max_epochs": 50,
+  "stage1_checkpoints": [1, 3, 5, 10, 20, 30, 50],
+  "a0_epochs": 100,
+  "stage2_epochs": 30,
+  "stage2_checkpoints": [1, 3, 5, 10, 20, 30],
+  "stage1_lr_d": 0.0004,
+  "stage1_lr_g": 0.0001,
+  "stage2_lr": 0.0002,
+  "lambda_labelmix": 10.0,
+  "wise_alpha": 0.8,
+  "wise_alpha_status": "frozen_development_candidate",
+  "threshold_grid": [0.10, 0.15, 0.20, 0.25, 0.30, 0.35, 0.40, 0.45, 0.50, 0.55, 0.60, 0.65, 0.70, 0.75, 0.80, 0.85, 0.90],
+  "metrics": ["precision", "recall", "dice_f1", "iou", "accuracy", "mean_image_dice", "cldice", "boundary_f1", "normal_fp_fraction"],
+  "paired_statistics": "per-image bootstrap 95% CI",
+  "canonical_requirements": [
+    "clean_git_head",
+    "dataset_content_sha256",
+    "lineage_disjoint_fit_cal_val",
+    "exact_rgb_disjoint_fit_cal_val",
+    "matching_image_mask_dimensions",
+    "calibrated_threshold_frozen_before_val_or_external_evaluation"
+  ]
+}
