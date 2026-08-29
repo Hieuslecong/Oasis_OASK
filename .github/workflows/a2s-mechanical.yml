@@ -18,3 +18,10 @@ jobs:
       - run: python -m pip install -e '.[test]'
       - run: python -m compileall src tests
       - run: pytest -q tests/test_a2s.py
+      - name: Build exact source archive
+        run: git archive --format=zip --output=OASIS_A2S_v0.1.1_exact.zip HEAD
+      - uses: actions/upload-artifact@v4
+        with:
+          name: OASIS_A2S_v0.1.1_exact
+          path: OASIS_A2S_v0.1.1_exact.zip
+          if-no-files-found: error
