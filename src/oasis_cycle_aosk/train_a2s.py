@@ -66,6 +66,11 @@ def _sha256(path: str | Path) -> str:
     return h.hexdigest()
 
 
+def _sha256_json(obj: dict) -> str:
+    payload = json.dumps(obj, sort_keys=True, separators=(",", ":")).encode()
+    return hashlib.sha256(payload).hexdigest()
+
+
 def _git_commit() -> str | None:
     try:
         return subprocess.check_output(
@@ -99,6 +104,28 @@ def _environment_record(device: torch.device) -> dict:
         "cudnn_benchmark": torch.backends.cudnn.benchmark,
         "cudnn_deterministic": torch.backends.cudnn.deterministic,
         "cublas_workspace_config": os.environ.get("CUBLAS_WORKSPACE_CONFIG"),
+    }
+
+
+def _config_record(a) -> dict:
+    return {
+        "seed": int(a.seed),
+        "size": int(a.size),
+        "batch": int(a.batch),
+        "workers": int(a.workers),
+        "width": int(a.width),
+        "generator_width": int(a.generator_width),
+        "noise_channels": int(a.noise_channels),
+        "stage1_epochs": int(a.stage1_epochs),
+        "stage2_epochs": int(a.stage2_epochs),
+        "lr_d": float(a.lr_d),
+        "lr_g": float(a.lr_g),
+        "stage2_lr": float(a.stage2_lr),
+        "lambda_labelmix": float(a.lambda_labelmix),
+        "dice_weight": float(a.dice_weight),
+        "train_split": a.train_split,
+        "val_split": a.val_split,
+        "allow_nondeterministic": bool(a.allow_nondeterministic),
     }
 
 
@@ -208,6 +235,7 @@ def train_stage2(model, loader, device, epochs, lr, dice_weight):
 
 
 def _checkpoint_common(a, device: torch.device):
+    config = _config_record(a)
     return {
         "method": METHOD_VERSION,
         "implementation_revision": IMPLEMENTATION_REVISION,
@@ -215,6 +243,8 @@ def _checkpoint_common(a, device: torch.device):
         "image_size": a.size,
         "width": a.width,
         "manifest_sha256": _sha256(a.manifest),
+        "config": config,
+        "config_sha256": _sha256_json(config),
         "train_split": a.train_split,
         "val_split": a.val_split,
         "test_firewall": "closed",
@@ -234,6 +264,12 @@ def _checkpoint_common(a, device: torch.device):
 def run(a):
     _assert_dev_split(a.train_split)
     _assert_dev_split(a.val_split)
+    dirty = _git_dirty()
+    if dirty is True and not a.allow_dirty:
+        raise RuntimeError(
+            "canonical OASIS-A2S run requires a clean Git worktree; "
+            "use --allow-dirty only for explicitly diagnostic runs"
+        )
     device = torch.device(a.device)
     if device.type == "cuda" and not a.allow_nondeterministic:
         os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
@@ -281,6 +317,7 @@ def run(a):
     results["arms"]["A0"] = {
         **m0,
         "checkpoint": str(a0_path),
+        "checkpoint_sha256": _sha256(a0_path),
         "params": parameter_count(a0),
     }
 
@@ -316,6 +353,7 @@ def run(a):
     results["arms"]["A1"] = {
         **m1,
         "checkpoint": str(stage1_path),
+        "checkpoint_sha256": _sha256(stage1_path),
         "params": parameter_count(d),
         "inference": "first two real-class logits only",
     }
@@ -341,6 +379,7 @@ def run(a):
     results["arms"]["A2"] = {
         **m2,
         "checkpoint": str(a2_path),
+        "checkpoint_sha256": _sha256(a2_path),
         "params": parameter_count(a2),
     }
     results["delta_A2_minus_A0"] = {
@@ -383,6 +422,11 @@ def build_parser():
         "--allow-nondeterministic",
         action="store_true",
         help="Allow faster nondeterministic kernels; never use for canonical evidence runs.",
+    )
+    p.add_argument(
+        "--allow-dirty",
+        action="store_true",
+        help="Allow a dirty Git worktree only for explicitly diagnostic runs.",
     )
     return p
 
