@@ -1,123 +1,179 @@
-# OASIS-RC-v2.1 crack segmentation
+# OASIS-A2S v0.1 crack segmentation
 
-Compact research implementation of **OASIS-RC-v2.1-dev3** for training lightweight RGB-only crack-segmentation models with training-only relational and orientation-aware supervision.
+Experimental research branch implementing **OASIS-A2S v0.1**: semantic-adversarial OASIS pretraining followed by transfer of the same discriminator into a deployable 2-class crack segmenter.
 
 ```text
-method_version         = OASIS-RC-v2.1
-implementation_version = 2.1.0-dev3
-checkpoint_schema      = 5
-experiment_id          = oasis-rc-v2.1-gt-anchored-relational-energy-head
-trainer_contract       = oasis-rc-v21-canonical-v1
+method_version          = OASIS-A2S-v0.1
+implementation_revision = 0.1.1
+package_version         = 0.1.1
+branch                  = feat/oasis-a2s-v0.1
 ```
 
-Scientific source of truth: `METHOD_SPEC_V2_1.md`  
-Metric contract: `METRIC_SPEC_V2_1.md`  
-Executable protocol: `protocols/real_data_v21.json`
+This branch is intentionally narrow. It does **not** add OASIS-RC critics, AOSK, Mamba, SAM, physics simulation or topology heads to the A2S core.
+
+## Scientific hypothesis
+
+The Gate-1 question is deliberately simple:
+
+```text
+Does semantic-adversarial pretraining of an OASIS discriminator provide a
+better initialization for real-data crack segmentation than training the same
+2-class architecture from scratch?
+```
+
+The prototype evaluates three arms:
+
+```text
+A0  same 2-class discriminator architecture, supervised from scratch
+A1  Stage-I OASIS N+1 discriminator, evaluated through its two real classes
+A2  exact Stage-I D -> 2-class transfer, then real-only segmentation fine-tune
+```
+
+A0 and A2 use the same Stage-II architecture, loss, learning rate, epoch budget,
+resolution, data view and shuffle seed. Their intended difference is the OASIS
+semantic-adversarial initialization of A2.
+
+## Architecture and training contract
+
+For binary crack segmentation, Stage I predicts:
+
+```text
+background / crack / fake
+```
+
+The training-only generator is conditioned by the binary semantic map plus a
+spatial noise tensor. Stage-I training uses the OASIS principles required by the
+A2S hypothesis:
+
+- per-pixel N+1 semantic discriminator objective;
+- inverse-frequency class balancing for real semantic classes;
+- fake-class supervision for generated images;
+- semantic adversarial supervision for the generator;
+- class-aware LabelMix consistency;
+- semantic + 3D-noise conditioning in the generator.
+
+Reference defaults for the Stage-I pilot are:
+
+```text
+lr_D             = 4e-4
+lr_G             = 1e-4
+lambda_labelmix  = 10
+```
+
+The discriminator is a compact U-Net-style adaptation, not a byte-for-byte copy
+of the archived upstream OASIS architecture. OASIS-A2S reimplements the method
+principles needed for the transfer experiment rather than vendoring the upstream
+repository.
+
+## Exact A2S transfer
+
+Stage-I head:
+
+```text
+[BG, Crack, Fake]
+```
+
+Stage-II head:
+
+```text
+[BG, Crack]
+```
+
+`transfer_to_segmenter()` preserves the encoder, decoder, skip-path parameters,
+and the BG/Crack classifier weights exactly; the Fake classifier row is removed.
+The entire transferred segmenter is then fine-tuned on real image/mask pairs.
 
 ## Inference contract
 
 Deployment is always:
 
 ```text
-RGB -> lightweight student -> crack logits/mask
+RGB -> transferred 2-class OASIS-A2S discriminator -> crack mask
 ```
 
-The relation critic, relation-energy head, AOSK and clDice supervision are training-only. Deployment checkpoints must not contain critic/generator/discriminator/AOSK state.
+The generator is training-only and must not be present in A0/A2 deployment
+checkpoints. No critic, generator, discriminator wrapper or AOSK state is accepted
+by the deployment evaluator.
 
-The canonical primary student is MobileNetV3-Small-style with **fixed canonical width metadata `16`**. This implementation does not expose width scaling for MobileNetV3; canonical shared initialization rejects any other `student_width`, and deployment-checkpoint validation rejects non-16 MobileNetV3 metadata. Other lightweight backbones retain their explicit width parameter.
+## Development firewall
 
-## Experimental arms
+Development training rejects split names containing semantic tokens:
 
 ```text
-B0  BCE + Dice
-B1  B0 + clDice
-B2  B0 + frozen pretrained pair-critic BCE
-S1  B0 + OASIS-RC-v2.1
-S2  B0 + AOSK structure-tensor-v2
-S3  B0 + OASIS-RC-v2.1 + AOSK structure-tensor-v2
+test
+final
+holdout
 ```
 
-B2 is a frozen pair-critic ablation, not conventional jointly-trained adversarial learning. Primary paired contrasts are `B1-B0`, `B2-B0`, `S1-B0`, `S2-B0`, and `S3-S2`. Null/negative effects are valid outcomes.
+Examples rejected include `test`, `final_external`, `test_2026`,
+`external-final`, `holdout_v2` and `evaluation_test`.
 
-## Data protocols
-
-**N0:** no external normal supervision; certified native-empty rows may remain internal true negatives.
-
-**N25:** external true-normal RGB occupies 25% of the training batch budget. Normal data must be lineage-disjoint across `normal_train`, `normal_val`, and `normal_test`. Critic qualification for N25 uses held-out `normal_val`, never `normal_train` as a fallback. Dev3 additionally requires relation-energy PASS for both C9 texture-guided false positives and C8 crack-donor false positives on held-out normal RGB.
-
-Prepare the canonical benchmark and training views with:
-
-```bash
-export DATA_ROOT=/path/to/data_v21
-export CANONICAL_MANIFEST=/path/to/canonical_manifest.jsonl
-export NORMAL_ROOT=/path/to/true_normal_rgb
-export LINEAGE_REGEX='...'
-bash scripts/prepare_real_data_v21.sh
-```
-
-The preparation path performs cleaning/CleanEval, audited normal splitting, full-benchmark Gate0, and separate N0/N25 training-view Gate0 certificates. Canonical `test` and `normal_test` rows never enter training views.
-
-## Development run
-
-Canonical order:
+The development evaluator is also manifest-provenance bound. By default:
 
 ```text
-Gate0
--> CUDA preflight
--> shared random student initialization
--> B0/S0 baseline
--> critic training
--> representation + crack/normal relation-energy qualification
--> trained-S0 RC gradient/energy diagnostic
--> freeze auxiliary weights
--> B0/B1/B2/S1/S2/S3
--> separate crack-val and normal-val evaluation
+SHA256(evaluation manifest) == checkpoint.manifest_sha256
 ```
 
-Main entry point:
+is mandatory. Development evaluation cannot override a manifest mismatch. A
+future frozen external/final evaluation must opt in explicitly and the mismatch
+and final-test overrides are recorded in the output artifact.
 
-```bash
-export NORMAL_FRACTION=0.0   # N0, or 0.25 for N25
-export SEED=1337
-export EXP_ROOT=/path/to/experiments/v21/seed1337
-export DATA_ROOT=/path/to/data_v21
-export CANONICAL_MANIFEST=/path/to/canonical_manifest.jsonl
-export NORMAL_ROOT=/path/to/true_normal_rgb
-export LINEAGE_REGEX='...'
-bash scripts/run_training_ready_v21.sh
-```
+## Reproducibility policy
 
-The dev3 student default is **100 epochs** with best-validation checkpoint selection. This is a development budget, not a claimed optimum; the confirmatory budget must be frozen after convergence is inspected on development seed 1337 only. All paired arms then use the same frozen budget.
+Canonical development runs enable deterministic PyTorch algorithms, disable
+cuDNN benchmarking, enable deterministic cuDNN behavior, seed Python/NumPy/Torch,
+and configure `CUBLAS_WORKSPACE_CONFIG` before CUDA seeding. Because PyTorch does
+not guarantee identical results across releases, platforms, or CPU/GPU backends,
+reproducibility claims are scoped to a frozen software/hardware execution setup.
 
-Development critic gates are fail-closed. At minimum: valid-crack recall `>=0.80`, invalid recall `>=0.90`, RGB/mask pair drops `>=0.05`, minimum required-corruption recall `>=0.70`, at least 16 samples per required corruption, positive energy-gap fraction `>=0.70`, continuous path-order fraction `>=0.65`, mean/median energy gap `>0`, at least 16 energy samples, and finite energies. N25 applies the same energy criteria to C9 normal-texture and C8 normal-donor trajectories. Do not lower gates to obtain a PASS.
-
-## Evaluation and statistics
-
-Crack-positive rows use precision, recall, Dice, IoU, clDice, skeleton precision/recall and component-excess metrics. True-negative rows are evaluated separately with normal false-positive pixels/components and any-FP rate; crack-overlap metrics are not averaged over empty targets.
-
-Confirmatory inference uses the training seed as the sampling unit. Canonical confirmatory seeds are:
+Checkpoints record:
 
 ```text
-2027  31415  42421  51511  62617
+method + implementation revision
+git commit + dirty state
+manifest SHA256
+train/validation split names
+seed, resolution and learning rates
+epoch budgets and loss weights
+PyTorch/CUDA/cuDNN/device determinism metadata
 ```
 
-The immutable final bundle requires all six arms for all five seeds, frozen thresholds, exact data/spec/protocol/evaluator hashes, paired initialization/training-view provenance and one frozen Git commit. Exact sign-flip p-values remain secondary because five paired seeds give a coarse discrete null distribution.
-
-## Verification policy
-
-**Testing is local/external; GitHub is source storage only.** GitHub is not used as the scientific execution environment.
-
-Before source is stored, run local checks in the execution environment, for example:
+## Prototype command
 
 ```bash
-python -m compileall src scripts tests
+python -m oasis_cycle_aosk.train_a2s \
+  --manifest /path/to/manifest.jsonl \
+  --out /path/to/experiments/a2s_gate1_seed1337 \
+  --train-split train \
+  --val-split val \
+  --size 256 \
+  --batch 8 \
+  --device cuda \
+  --seed 1337 \
+  --stage1-epochs 30 \
+  --stage2-epochs 30
+```
+
+Do not use `--allow-nondeterministic` for canonical evidence runs.
+
+## Verification
+
+Before real Gate-1 training, run from a clean checkout of the exact frozen commit:
+
+```bash
+python -m compileall src tests
 pytest -q
 ```
 
-Then run an end-to-end smoke on representative train/validation data with the canonical test firewall closed. Smoke evidence is mechanical integration evidence only; it does not establish model efficacy.
+Then run a small CPU or GPU end-to-end smoke using only train/validation rows.
+Mechanical smoke success does not establish scientific efficacy.
 
-For real experiments, `scripts/preflight_v21_real_gpu.py` remains the target-host CUDA/backward gate. Full scientific GO additionally requires the real dataset Gate0 certificates, real critic qualification, trained-S0 diagnostic, frozen development decisions and the complete multi-seed protocol.
+The v0.1 Gate-1 decision is based on A0 versus A2. If A2 does not improve over A0
+under the frozen pilot protocol, the OASIS-A2S direction should be treated as
+negative/inconclusive rather than rescued by adding unrelated architecture.
 
-## Final-test firewall
+## Historical OASIS-RC work
 
-`test` and `normal_test` are canonical final-test material. Development trainers/diagnostics/evaluators refuse them. Canonical final evaluation is permitted only through `scripts/run_final_bundle_v21.py` after all models, thresholds, metrics and statistical decisions are frozen. Until then, the final test remains **CLOSED**.
+The parent branch `feat/oasis-rc-v2.1-dev3-q1` preserves the previous OASIS-RC-v2.1
+experiments and documentation. This A2S branch intentionally separates the new
+method hypothesis from that historical path.
