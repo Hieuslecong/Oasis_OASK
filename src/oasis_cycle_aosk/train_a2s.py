@@ -234,12 +234,12 @@ def _checkpoint_common(a, device: torch.device):
 def run(a):
     _assert_dev_split(a.train_split)
     _assert_dev_split(a.val_split)
-    _seed_everything(a.seed, deterministic=not a.allow_nondeterministic)
     device = torch.device(a.device)
-    if device.type == "cuda" and not torch.cuda.is_available():
-        raise RuntimeError("CUDA requested but unavailable")
     if device.type == "cuda" and not a.allow_nondeterministic:
         os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
+    _seed_everything(a.seed, deterministic=not a.allow_nondeterministic)
+    if device.type == "cuda" and not torch.cuda.is_available():
+        raise RuntimeError("CUDA requested but unavailable")
     out = Path(a.out)
     out.mkdir(parents=True, exist_ok=True)
     stage1_loader = _loader(
@@ -255,7 +255,11 @@ def run(a):
         a.manifest, a.val_split, a.size, a.batch, a.workers, False
     )
     common = _checkpoint_common(a, device)
-    results = {"method": METHOD_VERSION, "implementation_revision": IMPLEMENTATION_REVISION, "arms": {}}
+    results = {
+        "method": METHOD_VERSION,
+        "implementation_revision": IMPLEMENTATION_REVISION,
+        "arms": {},
+    }
 
     _seed_everything(a.seed, deterministic=not a.allow_nondeterministic)
     a0 = OASISA2SDiscriminator(a.width, 2).to(device)
