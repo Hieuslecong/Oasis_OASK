@@ -1,0 +1,20 @@
+name: OASIS-A2S mechanical verification
+
+on:
+  push:
+    branches: ["feat/oasis-a2s-v0.1"]
+  pull_request:
+    branches: ["feat/oasis-rc-v2.1-dev3-q1"]
+
+jobs:
+  mechanical:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: python -m pip install --upgrade pip
+      - run: python -m pip install -e '.[test]'
+      - run: python -m compileall src tests
+      - run: pytest -q tests/test_a2s.py
