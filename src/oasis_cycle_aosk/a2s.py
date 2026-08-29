@@ -128,7 +128,12 @@ class ConditionalResBlock(nn.Module):
 
 
 class OASISA2SGenerator(nn.Module):
-    """Training-only crack-mask-conditioned generator with 3D noise conditioning."""
+    """Training-only crack-mask-conditioned generator with 3D noise conditioning.
+
+    Default training samples one global latent vector per image and spatially
+    expands it, matching the upstream OASIS training path. Explicit full-resolution
+    noise is also accepted for controlled local-sampling diagnostics.
+    """
 
     def __init__(self, width: int = 32, noise_channels: int = 4):
         super().__init__()
@@ -157,22 +162,33 @@ class OASISA2SGenerator(nn.Module):
         crack = (mask > 0.5).to(mask.dtype)
         return torch.cat([1.0 - crack, crack], 1)
 
-    def forward(self, mask: Tensor, noise: Optional[Tensor] = None) -> Tensor:
-        semantic = self.semantic_one_hot(mask)
+    def _noise_map(self, semantic: Tensor, noise: Optional[Tensor]) -> Tensor:
         b, _, h, w = semantic.shape
         if noise is None:
             noise = torch.randn(
                 b,
                 self.noise_channels,
-                h,
-                w,
+                1,
+                1,
                 device=semantic.device,
                 dtype=semantic.dtype,
             )
-        expected = (b, self.noise_channels, h, w)
-        if tuple(noise.shape) != expected:
-            raise ValueError(f"noise must have shape {expected}, got {tuple(noise.shape)}")
-        condition = torch.cat([semantic, noise], 1)
+        if noise.ndim != 4 or noise.shape[:2] != (b, self.noise_channels):
+            raise ValueError(
+                f"noise must start with shape {(b, self.noise_channels)}, got {tuple(noise.shape)}"
+            )
+        if noise.shape[-2:] == (1, 1):
+            return noise.expand(b, self.noise_channels, h, w)
+        if noise.shape[-2:] == (h, w):
+            return noise
+        raise ValueError(
+            f"noise spatial shape must be (1,1) or {(h, w)}, got {tuple(noise.shape[-2:])}"
+        )
+
+    def forward(self, mask: Tensor, noise: Optional[Tensor] = None) -> Tensor:
+        semantic = self.semantic_one_hot(mask)
+        noise_map = self._noise_map(semantic, noise)
+        condition = torch.cat([semantic, noise_map], 1)
         x0 = self.in_conv(condition)
         x1 = self.b1(x0, condition)
         x2 = self.b3(self.b2(self.down(x1), condition), condition)
