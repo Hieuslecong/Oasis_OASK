@@ -1,10 +1,10 @@
-name: OASIS-A2S mechanical verification
+name: OASIS-A2S v0.1.2 mechanical verification
 
 on:
   push:
-    branches: ["feat/oasis-a2s-v0.1"]
+    branches: ["feat/oasis-a2s-v0.1.2"]
   pull_request:
-    branches: ["feat/oasis-rc-v2.1-dev3-q1"]
+    branches: ["feat/oasis-a2s-v0.1.2"]
 
 jobs:
   mechanical:
@@ -19,9 +19,9 @@ jobs:
       - run: python -m compileall src tests
       - run: pytest -q tests/test_a2s.py
       - name: Build exact source archive
-        run: git archive --format=zip --output=OASIS_A2S_v0.1.1_exact.zip HEAD
+        run: git archive --format=zip --output=OASIS_A2S_v0.1.2_exact.zip HEAD
       - uses: actions/upload-artifact@v4
         with:
-          name: OASIS_A2S_v0.1.1_exact
-          path: OASIS_A2S_v0.1.1_exact.zip
+          name: OASIS_A2S_v0.1.2_exact
+          path: OASIS_A2S_v0.1.2_exact.zip
           if-no-files-found: error
