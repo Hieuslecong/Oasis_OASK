@@ -18,6 +18,28 @@ from .data import ManifestDataset
 from .train_a2s import _assert_dev_split, _sha256, evaluate_logits
 
 
+def _verify_manifest_provenance(
+    checkpoint_manifest_sha: str,
+    evaluation_manifest_sha: str,
+    *,
+    is_dev_split: bool,
+    allow_manifest_mismatch: bool,
+) -> bool:
+    if not isinstance(checkpoint_manifest_sha, str) or len(checkpoint_manifest_sha) != 64:
+        raise ValueError("checkpoint is missing a valid manifest_sha256")
+    if not isinstance(evaluation_manifest_sha, str) or len(evaluation_manifest_sha) != 64:
+        raise ValueError("evaluation manifest SHA256 is invalid")
+    manifest_match = evaluation_manifest_sha == checkpoint_manifest_sha
+    if not manifest_match and not allow_manifest_mismatch:
+        raise ValueError(
+            "evaluation manifest SHA256 does not match checkpoint provenance; "
+            "use --allow-manifest-mismatch only for an explicit external/final evaluation"
+        )
+    if is_dev_split and not manifest_match:
+        raise ValueError("development evaluation may not override manifest provenance")
+    return manifest_match
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--checkpoint", required=True)
@@ -57,17 +79,13 @@ def main():
         )
 
     checkpoint_manifest_sha = ck.get("manifest_sha256")
-    if not isinstance(checkpoint_manifest_sha, str) or len(checkpoint_manifest_sha) != 64:
-        raise ValueError("checkpoint is missing a valid manifest_sha256")
     evaluation_manifest_sha = _sha256(a.manifest)
-    manifest_match = evaluation_manifest_sha == checkpoint_manifest_sha
-    if not manifest_match and not a.allow_manifest_mismatch:
-        raise ValueError(
-            "evaluation manifest SHA256 does not match checkpoint provenance; "
-            "use --allow-manifest-mismatch only for an explicit external/final evaluation"
-        )
-    if is_dev_split and not manifest_match:
-        raise ValueError("development evaluation may not override manifest provenance")
+    manifest_match = _verify_manifest_provenance(
+        checkpoint_manifest_sha,
+        evaluation_manifest_sha,
+        is_dev_split=is_dev_split,
+        allow_manifest_mismatch=a.allow_manifest_mismatch,
+    )
 
     device = torch.device(a.device)
     if device.type == "cuda" and not torch.cuda.is_available():
