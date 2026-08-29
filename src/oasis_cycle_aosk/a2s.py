@@ -20,7 +20,7 @@ import torch.nn.functional as F
 
 
 METHOD_VERSION = "OASIS-A2S-v0.1"
-IMPLEMENTATION_REVISION = "0.1.2"
+IMPLEMENTATION_REVISION = "0.1.3"
 REAL_CLASSES = 2
 FAKE_CLASS = 2
 
@@ -104,9 +104,7 @@ class SpatialAffineNorm(nn.Module):
 
     def forward(self, x: Tensor, condition: Tensor) -> Tensor:
         if condition.ndim != 4 or condition.shape[1] != self.condition_channels:
-            raise ValueError(
-                f"condition must be Bx{self.condition_channels}xHxW"
-            )
+            raise ValueError(f"condition must be Bx{self.condition_channels}xHxW")
         condition = F.interpolate(condition, size=x.shape[-2:], mode="nearest")
         h = self.shared(condition)
         return self.norm(x) * (1.0 + self.gamma(h)) + self.beta(h)
@@ -165,25 +163,14 @@ class OASISA2SGenerator(nn.Module):
     def _noise_map(self, semantic: Tensor, noise: Optional[Tensor]) -> Tensor:
         b, _, h, w = semantic.shape
         if noise is None:
-            noise = torch.randn(
-                b,
-                self.noise_channels,
-                1,
-                1,
-                device=semantic.device,
-                dtype=semantic.dtype,
-            )
+            noise = torch.randn(b, self.noise_channels, 1, 1, device=semantic.device, dtype=semantic.dtype)
         if noise.ndim != 4 or noise.shape[:2] != (b, self.noise_channels):
-            raise ValueError(
-                f"noise must start with shape {(b, self.noise_channels)}, got {tuple(noise.shape)}"
-            )
+            raise ValueError(f"noise must start with shape {(b, self.noise_channels)}, got {tuple(noise.shape)}")
         if noise.shape[-2:] == (1, 1):
             return noise.expand(b, self.noise_channels, h, w)
         if noise.shape[-2:] == (h, w):
             return noise
-        raise ValueError(
-            f"noise spatial shape must be (1,1) or {(h, w)}, got {tuple(noise.shape[-2:])}"
-        )
+        raise ValueError(f"noise spatial shape must be (1,1) or {(h, w)}, got {tuple(noise.shape[-2:])}")
 
     def forward(self, mask: Tensor, noise: Optional[Tensor] = None) -> Tensor:
         semantic = self.semantic_one_hot(mask)
@@ -229,22 +216,12 @@ def balanced_semantic_ce(logits: Tensor, target: Tensor) -> Tensor:
 def fake_ce(logits_fake: Tensor) -> Tensor:
     if logits_fake.ndim != 4 or logits_fake.shape[1] != REAL_CLASSES + 1:
         raise ValueError("Stage-I discriminator logits must have 3 channels")
-    target = torch.full(
-        (logits_fake.shape[0], *logits_fake.shape[-2:]),
-        FAKE_CLASS,
-        dtype=torch.long,
-        device=logits_fake.device,
-    )
+    target = torch.full((logits_fake.shape[0], *logits_fake.shape[-2:]), FAKE_CLASS, dtype=torch.long, device=logits_fake.device)
     return F.cross_entropy(logits_fake, target)
 
 
 def labelmix_mask(target: Tensor, generator: Optional[torch.Generator] = None) -> Tensor:
-    """Class-aware LabelMix mask matching the official OASIS sampling semantics.
-
-    One Bernoulli decision is sampled for each semantic class present in the
-    complete batch target map, so a semantic class is never split into real/fake
-    identities by LabelMix itself.
-    """
+    """Class-aware LabelMix mask matching the official OASIS sampling semantics."""
     if target.ndim != 3:
         raise ValueError("target must be BxHxW")
     out = torch.zeros(target.shape, device=target.device, dtype=torch.float32)
@@ -254,14 +231,7 @@ def labelmix_mask(target: Tensor, generator: Optional[torch.Generator] = None) -
     return out[:, None]
 
 
-def labelmix_consistency(
-    discriminator: nn.Module,
-    real: Tensor,
-    fake_detached: Tensor,
-    logits_real: Tensor,
-    logits_fake: Tensor,
-    mix_mask: Tensor,
-) -> Tensor:
+def labelmix_consistency(discriminator: nn.Module, real: Tensor, fake_detached: Tensor, logits_real: Tensor, logits_fake: Tensor, mix_mask: Tensor) -> Tensor:
     if mix_mask.shape != real[:, :1].shape:
         raise ValueError("mix_mask must be Bx1xHxW")
     mixed = mix_mask * real + (1.0 - mix_mask) * fake_detached
@@ -269,14 +239,7 @@ def labelmix_consistency(
     return F.mse_loss(discriminator(mixed), expected)
 
 
-def stage1_discriminator_loss(
-    discriminator: OASISA2SDiscriminator,
-    real: Tensor,
-    mask: Tensor,
-    fake_detached: Tensor,
-    lambda_labelmix: float = 10.0,
-    mix_generator: Optional[torch.Generator] = None,
-):
+def stage1_discriminator_loss(discriminator: OASISA2SDiscriminator, real: Tensor, mask: Tensor, fake_detached: Tensor, lambda_labelmix: float = 10.0, mix_generator: Optional[torch.Generator] = None):
     if discriminator.out_classes != 3:
         raise ValueError("Stage I requires a 3-class discriminator")
     target = semantic_target(mask)
@@ -285,20 +248,11 @@ def stage1_discriminator_loss(
     loss_real = balanced_semantic_ce(logits_real, target)
     loss_fake = fake_ce(logits_fake)
     mix = labelmix_mask(target, mix_generator)
-    loss_mix = labelmix_consistency(
-        discriminator, real, fake_detached, logits_real, logits_fake, mix
-    )
-    return (
-        loss_real + loss_fake + float(lambda_labelmix) * loss_mix,
-        loss_real,
-        loss_fake,
-        loss_mix,
-    )
+    loss_mix = labelmix_consistency(discriminator, real, fake_detached, logits_real, logits_fake, mix)
+    return loss_real + loss_fake + float(lambda_labelmix) * loss_mix, loss_real, loss_fake, loss_mix
 
 
-def stage1_generator_loss(
-    discriminator: OASISA2SDiscriminator, fake: Tensor, mask: Tensor
-) -> Tensor:
+def stage1_generator_loss(discriminator: OASISA2SDiscriminator, fake: Tensor, mask: Tensor) -> Tensor:
     if discriminator.out_classes != 3:
         raise ValueError("Stage I requires a 3-class discriminator")
     return balanced_semantic_ce(discriminator(fake), semantic_target(mask))
@@ -314,18 +268,12 @@ def soft_dice_loss(logits: Tensor, target: Tensor, eps: float = 1e-6) -> Tensor:
     return 1.0 - ((2.0 * inter + eps) / (denom + eps)).mean()
 
 
-def stage2_segmentation_loss(
-    logits: Tensor, mask: Tensor, dice_weight: float = 1.0
-) -> Tensor:
+def stage2_segmentation_loss(logits: Tensor, mask: Tensor, dice_weight: float = 1.0) -> Tensor:
     target = semantic_target(mask)
-    return balanced_semantic_ce(logits, target) + float(dice_weight) * soft_dice_loss(
-        logits, target
-    )
+    return balanced_semantic_ce(logits, target) + float(dice_weight) * soft_dice_loss(logits, target)
 
 
-def transfer_to_segmenter(
-    discriminator: OASISA2SDiscriminator,
-) -> OASISA2SDiscriminator:
+def transfer_to_segmenter(discriminator: OASISA2SDiscriminator) -> OASISA2SDiscriminator:
     """Create a 2-class segmenter and preserve all BG/CRACK weights exactly."""
     if discriminator.out_classes != 3:
         raise ValueError("transfer source must be a 3-class Stage-I discriminator")
@@ -337,9 +285,7 @@ def transfer_to_segmenter(
     return segmenter
 
 
-def stage1_real_class_logits(
-    discriminator: OASISA2SDiscriminator, image: Tensor
-) -> Tensor:
+def stage1_real_class_logits(discriminator: OASISA2SDiscriminator, image: Tensor) -> Tensor:
     if discriminator.out_classes != 3:
         raise ValueError("A1 requires a 3-class Stage-I discriminator")
     return discriminator(image)[:, :REAL_CLASSES]
