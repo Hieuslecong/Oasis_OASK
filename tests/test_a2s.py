@@ -17,7 +17,7 @@ from oasis_cycle_aosk.a2s import (
     transfer_to_segmenter,
 )
 from oasis_cycle_aosk.evaluate_a2s import _verify_manifest_provenance
-from oasis_cycle_aosk.train_a2s import _assert_dev_split, build_parser
+from oasis_cycle_aosk.train_a2s import _assert_dev_split, _sha256_json, build_parser
 
 
 def toy(batch=2, size=32):
@@ -44,13 +44,25 @@ def test_stage1_shapes_and_finiteness():
         assert v.ndim == 0 and torch.isfinite(v)
 
 
-def test_generator_is_one_to_many_with_explicit_noise():
+def test_generator_is_one_to_many_with_global_oasis_noise():
     _, y = toy(1)
     g = OASISA2SGenerator(8, 2)
     assert g.condition_channels == 4
-    z0 = torch.zeros(1, 2, 32, 32)
-    z1 = torch.ones(1, 2, 32, 32)
+    z0 = torch.zeros(1, 2, 1, 1)
+    z1 = torch.ones(1, 2, 1, 1)
     assert not torch.allclose(g(y, z0), g(y, z1))
+
+
+def test_generator_accepts_explicit_local_noise_but_rejects_bad_spatial_shape():
+    _, y = toy(1)
+    g = OASISA2SGenerator(8, 2)
+    local = torch.randn(1, 2, 32, 32)
+    assert g(y, local).shape == (1, 3, 32, 32)
+    try:
+        g(y, torch.randn(1, 2, 4, 4))
+        assert False
+    except ValueError:
+        pass
 
 
 def test_semantic_target_binary():
@@ -161,9 +173,7 @@ def test_manifest_provenance_fail_closed_for_development():
 def test_manifest_mismatch_only_allowed_for_explicit_external_final():
     a = "a" * 64
     b = "b" * 64
-    assert not _verify_manifest_provenance(
-        a, b, is_dev_split=False, allow_manifest_mismatch=True
-    )
+    assert not _verify_manifest_provenance(a, b, is_dev_split=False, allow_manifest_mismatch=True)
     try:
         _verify_manifest_provenance(a, b, is_dev_split=False, allow_manifest_mismatch=False)
         assert False
@@ -176,6 +186,12 @@ def test_stage1_defaults_match_oasis_reference_learning_rates():
     assert args.lr_d == 4e-4
     assert args.lr_g == 1e-4
     assert args.lambda_labelmix == 10.0
+    assert args.allow_dirty is False
+    assert args.allow_nondeterministic is False
+
+
+def test_config_sha_is_order_invariant():
+    assert _sha256_json({"a": 1, "b": 2}) == _sha256_json({"b": 2, "a": 1})
 
 
 def test_one_optimizer_step_changes_expected_network_only():
