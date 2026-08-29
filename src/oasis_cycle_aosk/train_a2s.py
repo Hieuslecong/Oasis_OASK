@@ -1,12 +1,17 @@
-"""Train/evaluate OASIS-A2S v0.1 arms A0/A1/A2 without opening TEST.
+"""Train OASIS-A2S v0.1.2 under a leakage-safe FIT/CAL/VAL protocol.
 
-A0: same 2-class D architecture, supervised from scratch.
-A1: Stage-I 3-class OASIS discriminator evaluated directly on real classes.
-A2: Stage-I discriminator -> exact 2-class transfer -> real-only fine-tuning.
+A0       : 2-class scratch supervised control.
+A1       : Stage-I OASIS N+1 discriminator evaluated through its real classes.
+A2-Full  : exact D3->D2 transfer followed by full real-only fine-tuning.
+A2-WI    : frozen weight interpolation between transferred pre-FT and A2-Full.
+
+The OASIS scientific core is unchanged. v0.1.2 hardens evidence, calibration,
+resumability and representation-preserving transfer.
 """
 from __future__ import annotations
 
 import argparse
+import copy
 import hashlib
 import json
 import os
@@ -27,11 +32,11 @@ from .a2s import (
     parameter_count,
     stage1_discriminator_loss,
     stage1_generator_loss,
-    stage1_real_class_logits,
     stage2_segmentation_loss,
     transfer_to_segmenter,
 )
-from .data import ManifestDataset
+from .data import ManifestDataset, audit_manifest
+from .metrics_a2s import calibrate_threshold, evaluate_model, paired_bootstrap
 
 _FORBIDDEN_DEV_TOKENS = {"test", "final", "holdout"}
 
@@ -41,9 +46,8 @@ def _split_tokens(name: str) -> list[str]:
 
 
 def _assert_dev_split(name: str) -> None:
-    tokens = set(_split_tokens(name))
-    if tokens & _FORBIDDEN_DEV_TOKENS:
-        raise ValueError(f"OASIS-A2S v0.1 development firewall rejects split={name!r}")
+    if set(_split_tokens(name)) & _FORBIDDEN_DEV_TOKENS:
+        raise ValueError(f"OASIS-A2S v0.1.2 development firewall rejects split={name!r}")
 
 
 def _seed_everything(seed: int, deterministic: bool = True) -> None:
@@ -56,6 +60,25 @@ def _seed_everything(seed: int, deterministic: bool = True) -> None:
         torch.backends.cudnn.benchmark = False
         torch.backends.cudnn.deterministic = True
         torch.use_deterministic_algorithms(True)
+
+
+def _capture_rng_state() -> dict:
+    return {
+        "python": random.getstate(),
+        "numpy": np.random.get_state(),
+        "torch_cpu": torch.get_rng_state(),
+        "torch_cuda": torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None,
+    }
+
+
+def _restore_rng_state(state: dict | None) -> None:
+    if not state:
+        return
+    random.setstate(state["python"])
+    np.random.set_state(state["numpy"])
+    torch.set_rng_state(state["torch_cpu"])
+    if torch.cuda.is_available() and state.get("torch_cuda") is not None:
+        torch.cuda.set_rng_state_all(state["torch_cuda"])
 
 
 def _sha256(path: str | Path) -> str:
@@ -84,13 +107,28 @@ def _git_dirty() -> bool | None:
     try:
         return bool(
             subprocess.check_output(
-                ["git", "status", "--porcelain"],
-                text=True,
-                stderr=subprocess.DEVNULL,
+                ["git", "status", "--porcelain"], text=True, stderr=subprocess.DEVNULL
             ).strip()
         )
     except Exception:
         return None
+
+
+def _assert_git_provenance(*, allow_dirty: bool, allow_unversioned: bool) -> tuple[str | None, bool | None]:
+    commit, dirty = _git_commit(), _git_dirty()
+    if commit is None or dirty is None:
+        if not allow_unversioned:
+            raise RuntimeError(
+                "canonical OASIS-A2S run requires a Git checkout with a resolvable HEAD; "
+                "use --allow-unversioned only for diagnostic smoke runs"
+            )
+        return commit, dirty
+    if dirty and not allow_dirty:
+        raise RuntimeError(
+            "canonical OASIS-A2S run requires a clean Git worktree; "
+            "use --allow-dirty only for explicitly diagnostic runs"
+        )
+    return commit, dirty
 
 
 def _environment_record(device: torch.device) -> dict:
@@ -107,6 +145,20 @@ def _environment_record(device: torch.device) -> dict:
     }
 
 
+def _parse_int_list(text: str) -> tuple[int, ...]:
+    vals = sorted({int(v.strip()) for v in str(text).split(",") if v.strip()})
+    if any(v <= 0 for v in vals):
+        raise ValueError("checkpoint epochs must be positive")
+    return tuple(vals)
+
+
+def _parse_threshold_grid(text: str) -> tuple[float, ...]:
+    vals = tuple(float(v.strip()) for v in str(text).split(",") if v.strip())
+    if not vals or any(v <= 0.0 or v >= 1.0 for v in vals):
+        raise ValueError("threshold grid values must be in (0,1)")
+    return vals
+
+
 def _config_record(a) -> dict:
     return {
         "seed": int(a.seed),
@@ -117,15 +169,21 @@ def _config_record(a) -> dict:
         "generator_width": int(a.generator_width),
         "noise_channels": int(a.noise_channels),
         "stage1_epochs": int(a.stage1_epochs),
+        "a0_epochs": int(a.a0_epochs),
         "stage2_epochs": int(a.stage2_epochs),
         "lr_d": float(a.lr_d),
         "lr_g": float(a.lr_g),
         "stage2_lr": float(a.stage2_lr),
         "lambda_labelmix": float(a.lambda_labelmix),
         "dice_weight": float(a.dice_weight),
-        "train_split": a.train_split,
+        "fit_split": a.fit_split,
+        "cal_split": a.cal_split,
         "val_split": a.val_split,
+        "threshold_grid": list(_parse_threshold_grid(a.threshold_grid)),
+        "wise_alpha": float(a.wise_alpha),
         "allow_nondeterministic": bool(a.allow_nondeterministic),
+        "allow_missing_lineage": bool(a.allow_missing_lineage),
+        "allow_size_mismatch": bool(a.allow_size_mismatch),
     }
 
 
@@ -135,58 +193,87 @@ def _atomic_torch_save(obj, path: Path) -> None:
     tmp.replace(path)
 
 
-def _loader(manifest, split, size, batch, workers, shuffle, seed=None):
-    _assert_dev_split(split)
-    gen = (
-        torch.Generator().manual_seed(int(seed if seed is not None else 0))
-        if shuffle
-        else None
-    )
+def _epoch_loader(dataset, batch: int, workers: int, *, shuffle: bool, seed: int) -> DataLoader:
+    gen = torch.Generator().manual_seed(int(seed)) if shuffle else None
     return DataLoader(
-        ManifestDataset(manifest, split, size),
-        batch_size=batch,
-        shuffle=shuffle,
-        num_workers=workers,
+        dataset,
+        batch_size=int(batch),
+        shuffle=bool(shuffle),
+        num_workers=int(workers),
         pin_memory=False,
         drop_last=False,
         generator=gen,
     )
 
 
-@torch.no_grad()
-def evaluate_logits(model, loader, device, *, stage1: bool = False):
-    model.eval()
-    tp = fp = fn = tn = 0.0
-    for x, y in loader:
-        x, y = x.to(device), y.to(device)
-        logits = stage1_real_class_logits(model, x) if stage1 else model(x)
-        pred = logits.argmax(1, keepdim=True).float()
-        tp += float((pred * y).sum())
-        fp += float((pred * (1 - y)).sum())
-        fn += float(((1 - pred) * y).sum())
-        tn += float(((1 - pred) * (1 - y)).sum())
-    p = tp / (tp + fp + 1e-8)
-    r = tp / (tp + fn + 1e-8)
+def _eval_loader(dataset, batch: int, workers: int) -> DataLoader:
+    return _epoch_loader(dataset, batch, workers, shuffle=False, seed=0)
+
+
+def _stage1_state(
+    d, g, opt_d, opt_g, *, completed_epoch: int, history: list[dict], common: dict
+) -> dict:
     return {
-        "precision": p,
-        "recall": r,
-        "dice_f1": 2 * tp / (2 * tp + fp + fn + 1e-8),
-        "iou": tp / (tp + fp + fn + 1e-8),
-        "accuracy": (tp + tn) / (tp + tn + fp + fn + 1e-8),
+        **common,
+        "arm": "Stage-I",
+        "completed_epoch": int(completed_epoch),
+        "discriminator": d.state_dict(),
+        "generator": g.state_dict(),
+        "optimizer_d": opt_d.state_dict(),
+        "optimizer_g": opt_g.state_dict(),
+        "rng_state": _capture_rng_state(),
+        "history": history,
+        "generator_width": g.width,
+        "noise_channels": g.noise_channels,
+        "training_only_generator": True,
     }
 
 
+def _verify_stage1_resume(ck: dict, common: dict, a) -> None:
+    for key in ("method", "implementation_revision", "dataset_content_sha256", "width", "image_size"):
+        if ck.get(key) != common.get(key):
+            raise ValueError(f"Stage-I resume provenance mismatch for {key}")
+    if int(ck.get("generator_width", -1)) != int(a.generator_width):
+        raise ValueError("Stage-I resume generator_width mismatch")
+    if int(ck.get("noise_channels", -1)) != int(a.noise_channels):
+        raise ValueError("Stage-I resume noise_channels mismatch")
+    if "optimizer_d" not in ck or "optimizer_g" not in ck:
+        raise ValueError("Stage-I resume checkpoint must contain optimizer state")
+
+
 def train_stage1(
-    d, g, loader, device, epochs, lr_d, lr_g, lambda_labelmix, seed
+    d,
+    g,
+    dataset,
+    device,
+    *,
+    total_epochs: int,
+    batch: int,
+    workers: int,
+    lr_d: float,
+    lr_g: float,
+    lambda_labelmix: float,
+    seed: int,
+    start_epoch: int = 0,
+    opt_d_state=None,
+    opt_g_state=None,
+    history: list[dict] | None = None,
+    checkpoint_epochs: tuple[int, ...] = (),
+    checkpoint_callback=None,
 ):
-    d.train()
-    g.train()
     opt_d = torch.optim.Adam(d.parameters(), lr=lr_d, betas=(0.0, 0.999))
     opt_g = torch.optim.Adam(g.parameters(), lr=lr_g, betas=(0.0, 0.999))
-    history = []
+    if opt_d_state is not None:
+        opt_d.load_state_dict(opt_d_state)
+    if opt_g_state is not None:
+        opt_g.load_state_dict(opt_g_state)
+    history = list(history or [])
     mix_gen = torch.Generator(device=device.type if device.type == "cuda" else "cpu")
-    mix_gen.manual_seed(seed + 991)
-    for epoch in range(int(epochs)):
+
+    for epoch in range(int(start_epoch), int(total_epochs)):
+        d.train(); g.train()
+        mix_gen.manual_seed(int(seed) + 991 + epoch)
+        loader = _epoch_loader(dataset, batch, workers, shuffle=True, seed=seed + 10000 + epoch)
         sums = {"d": 0.0, "dr": 0.0, "df": 0.0, "mix": 0.0, "g": 0.0}
         n = 0
         for x, y in loader:
@@ -194,47 +281,87 @@ def train_stage1(
             with torch.no_grad():
                 fake_d = g(y)
             opt_d.zero_grad(set_to_none=True)
-            ld, lr, lf, lm = stage1_discriminator_loss(
-                d, x, y, fake_d, lambda_labelmix, mix_gen
-            )
-            ld.backward()
-            opt_d.step()
+            ld, lr, lf, lm = stage1_discriminator_loss(d, x, y, fake_d, lambda_labelmix, mix_gen)
+            ld.backward(); opt_d.step()
+
             for p in d.parameters():
                 p.requires_grad_(False)
             opt_g.zero_grad(set_to_none=True)
             fake_g = g(y)
             lg = stage1_generator_loss(d, fake_g, y)
-            lg.backward()
-            opt_g.step()
+            lg.backward(); opt_g.step()
             for p in d.parameters():
                 p.requires_grad_(True)
+
             for k, v in zip(sums, (ld, lr, lf, lm, lg)):
                 sums[k] += float(v.detach())
             n += 1
-        history.append({"epoch": epoch, **{k: v / max(n, 1) for k, v in sums.items()}})
-    return history
+        history.append({"epoch": epoch + 1, **{k: v / max(n, 1) for k, v in sums.items()}})
+        completed = epoch + 1
+        if checkpoint_callback is not None and completed in checkpoint_epochs:
+            checkpoint_callback(completed, d, g, opt_d, opt_g, history)
+    return history, opt_d, opt_g
 
 
-def train_stage2(model, loader, device, epochs, lr, dice_weight):
-    model.train()
+def train_stage2(
+    model,
+    dataset,
+    device,
+    *,
+    total_epochs: int,
+    batch: int,
+    workers: int,
+    lr: float,
+    dice_weight: float,
+    seed: int,
+    checkpoint_epochs: tuple[int, ...] = (),
+    checkpoint_callback=None,
+):
     opt = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-4)
     hist = []
-    for epoch in range(int(epochs)):
-        total = 0.0
-        n = 0
+    for epoch in range(int(total_epochs)):
+        model.train()
+        loader = _epoch_loader(dataset, batch, workers, shuffle=True, seed=seed + 20000 + epoch)
+        total = 0.0; n = 0
         for x, y in loader:
             x, y = x.to(device), y.to(device)
             opt.zero_grad(set_to_none=True)
             loss = stage2_segmentation_loss(model(x), y, dice_weight)
-            loss.backward()
-            opt.step()
-            total += float(loss.detach())
-            n += 1
-        hist.append({"epoch": epoch, "loss": total / max(n, 1)})
-    return hist
+            loss.backward(); opt.step()
+            total += float(loss.detach()); n += 1
+        hist.append({"epoch": epoch + 1, "loss": total / max(n, 1)})
+        completed = epoch + 1
+        if checkpoint_callback is not None and completed in checkpoint_epochs:
+            checkpoint_callback(completed, model, opt, hist)
+    return hist, opt
 
 
-def _checkpoint_common(a, device: torch.device):
+def interpolate_segmenters(pretrained, finetuned, alpha: float):
+    alpha = float(alpha)
+    if not 0.0 <= alpha <= 1.0:
+        raise ValueError("wise_alpha must be in [0,1]")
+    out = copy.deepcopy(pretrained)
+    pre, ft = pretrained.state_dict(), finetuned.state_dict()
+    mixed = {}
+    for key in pre:
+        if pre[key].dtype.is_floating_point:
+            mixed[key] = (1.0 - alpha) * pre[key] + alpha * ft[key]
+        else:
+            mixed[key] = ft[key].clone()
+    out.load_state_dict(mixed)
+    return out
+
+
+def _calibrate_validate(model, cal_ds, val_ds, device, a, *, stage1: bool = False):
+    grid = _parse_threshold_grid(a.threshold_grid)
+    cal_loader = _eval_loader(cal_ds, a.batch, a.workers)
+    val_loader = _eval_loader(val_ds, a.batch, a.workers)
+    threshold, cal_metrics = calibrate_threshold(model, cal_loader, device, grid, stage1=stage1)
+    val_metrics, val_rows = evaluate_model(model, val_loader, device, threshold, stage1=stage1)
+    return threshold, cal_metrics, val_metrics, val_rows
+
+
+def _checkpoint_common(a, device: torch.device, audit: dict, git_commit, git_dirty):
     config = _config_record(a)
     return {
         "method": METHOD_VERSION,
@@ -243,154 +370,190 @@ def _checkpoint_common(a, device: torch.device):
         "image_size": a.size,
         "width": a.width,
         "manifest_sha256": _sha256(a.manifest),
+        "dataset_content_sha256": audit["dataset_content_sha256"],
+        "dataset_audit": audit,
         "config": config,
         "config_sha256": _sha256_json(config),
-        "train_split": a.train_split,
+        "fit_split": a.fit_split,
+        "cal_split": a.cal_split,
         "val_split": a.val_split,
         "test_firewall": "closed",
-        "git_commit": _git_commit(),
-        "git_dirty": _git_dirty(),
+        "git_commit": git_commit,
+        "git_dirty": git_dirty,
         "environment": _environment_record(device),
         "stage1_lr_d": a.lr_d,
         "stage1_lr_g": a.lr_g,
         "stage2_lr": a.stage2_lr,
         "stage1_epochs": a.stage1_epochs,
+        "a0_epochs": a.a0_epochs,
         "stage2_epochs": a.stage2_epochs,
         "lambda_labelmix": a.lambda_labelmix,
         "dice_weight": a.dice_weight,
+        "threshold_source": a.cal_split,
+        "wise_alpha": a.wise_alpha,
     }
 
 
+def _write_val_rows(path: Path, arm: str, rows: list[dict]) -> str:
+    with path.open("w") as f:
+        for row in rows:
+            f.write(json.dumps({"arm": arm, **row}, sort_keys=True) + "\n")
+    return _sha256(path)
+
+
 def run(a):
-    _assert_dev_split(a.train_split)
-    _assert_dev_split(a.val_split)
-    dirty = _git_dirty()
-    if dirty is True and not a.allow_dirty:
-        raise RuntimeError(
-            "canonical OASIS-A2S run requires a clean Git worktree; "
-            "use --allow-dirty only for explicitly diagnostic runs"
-        )
+    for split in (a.fit_split, a.cal_split, a.val_split):
+        _assert_dev_split(split)
+    if len({a.fit_split, a.cal_split, a.val_split}) != 3:
+        raise ValueError("FIT/CAL/VAL must be three distinct splits")
+
+    git_commit, git_dirty = _assert_git_provenance(
+        allow_dirty=a.allow_dirty, allow_unversioned=a.allow_unversioned
+    )
     device = torch.device(a.device)
     if device.type == "cuda" and not a.allow_nondeterministic:
         os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
     _seed_everything(a.seed, deterministic=not a.allow_nondeterministic)
     if device.type == "cuda" and not torch.cuda.is_available():
         raise RuntimeError("CUDA requested but unavailable")
-    out = Path(a.out)
-    out.mkdir(parents=True, exist_ok=True)
-    stage1_loader = _loader(
-        a.manifest, a.train_split, a.size, a.batch, a.workers, True, a.seed + 101
+
+    audit = audit_manifest(
+        a.manifest,
+        (a.fit_split, a.cal_split, a.val_split),
+        require_lineage=not a.allow_missing_lineage,
+        allow_size_mismatch=a.allow_size_mismatch,
     )
-    a0_loader = _loader(
-        a.manifest, a.train_split, a.size, a.batch, a.workers, True, a.seed + 202
-    )
-    a2_loader = _loader(
-        a.manifest, a.train_split, a.size, a.batch, a.workers, True, a.seed + 202
-    )
-    val_loader = _loader(
-        a.manifest, a.val_split, a.size, a.batch, a.workers, False
-    )
-    common = _checkpoint_common(a, device)
+    out = Path(a.out); out.mkdir(parents=True, exist_ok=True)
+    fit_ds = ManifestDataset(a.manifest, a.fit_split, a.size)
+    cal_ds = ManifestDataset(a.manifest, a.cal_split, a.size, return_metadata=True)
+    val_ds = ManifestDataset(a.manifest, a.val_split, a.size, return_metadata=True)
+    common = _checkpoint_common(a, device, audit, git_commit, git_dirty)
     results = {
         "method": METHOD_VERSION,
         "implementation_revision": IMPLEMENTATION_REVISION,
+        "protocol": "FIT/CAL/VAL",
         "arms": {},
+        "paired_val": {},
     }
 
     _seed_everything(a.seed, deterministic=not a.allow_nondeterministic)
     a0 = OASISA2SDiscriminator(a.width, 2).to(device)
-    h0 = train_stage2(
-        a0, a0_loader, device, a.stage2_epochs, a.stage2_lr, a.dice_weight
+    h0, _ = train_stage2(
+        a0, fit_ds, device, total_epochs=a.a0_epochs, batch=a.batch, workers=a.workers,
+        lr=a.stage2_lr, dice_weight=a.dice_weight, seed=a.seed + 20,
     )
-    m0 = evaluate_logits(a0, val_loader, device)
+    t0, c0, m0, r0 = _calibrate_validate(a0, cal_ds, val_ds, device, a)
     a0_path = out / "a0_supervised.pt"
-    _atomic_torch_save(
-        {
-            **common,
-            "arm": "A0",
-            "segmenter": a0.state_dict(),
-            "history": h0,
-            "inference_contract": "RGB -> 2-class OASIS-A2S D",
-        },
-        a0_path,
-    )
+    _atomic_torch_save({
+        **common, "arm": "A0", "segmenter": a0.state_dict(), "history": h0,
+        "calibrated_threshold": t0, "calibration_metrics": c0,
+        "inference_contract": "RGB -> calibrated 2-class OASIS-A2S D",
+    }, a0_path)
+    r0_path = out / "a0_val_per_image.jsonl"
     results["arms"]["A0"] = {
-        **m0,
-        "checkpoint": str(a0_path),
-        "checkpoint_sha256": _sha256(a0_path),
+        **m0, "calibration": c0, "checkpoint": str(a0_path),
+        "checkpoint_sha256": _sha256(a0_path), "per_image_sha256": _write_val_rows(r0_path, "A0", r0),
         "params": parameter_count(a0),
     }
 
     _seed_everything(a.seed, deterministic=not a.allow_nondeterministic)
     d = OASISA2SDiscriminator(a.width, 3).to(device)
     g = OASISA2SGenerator(a.generator_width, a.noise_channels).to(device)
-    h1 = train_stage1(
-        d,
-        g,
-        stage1_loader,
-        device,
-        a.stage1_epochs,
-        a.lr_d,
-        a.lr_g,
-        a.lambda_labelmix,
-        a.seed,
+    start_epoch = 0; opt_d_state = opt_g_state = None; h1 = []
+    if a.stage1_resume:
+        ck = torch.load(a.stage1_resume, map_location="cpu", weights_only=False)
+        _verify_stage1_resume(ck, common, a)
+        d.load_state_dict(ck["discriminator"]); g.load_state_dict(ck["generator"])
+        opt_d_state, opt_g_state = ck["optimizer_d"], ck["optimizer_g"]
+        start_epoch = int(ck["completed_epoch"]); h1 = list(ck.get("history", []))
+        _restore_rng_state(ck.get("rng_state"))
+        if start_epoch >= a.stage1_epochs:
+            raise ValueError("Stage-I resume checkpoint is already at/after requested total epochs")
+
+    stage1_ck_epochs = tuple(e for e in _parse_int_list(a.stage1_checkpoints) if e <= a.stage1_epochs)
+    def save_stage1_epoch(completed, d_, g_, od_, og_, hist_):
+        _atomic_torch_save(
+            _stage1_state(d_, g_, od_, og_, completed_epoch=completed, history=hist_, common=common),
+            out / f"stage1_epoch_{completed:03d}.pt",
+        )
+    h1, opt_d, opt_g = train_stage1(
+        d, g, fit_ds, device, total_epochs=a.stage1_epochs, batch=a.batch, workers=a.workers,
+        lr_d=a.lr_d, lr_g=a.lr_g, lambda_labelmix=a.lambda_labelmix, seed=a.seed,
+        start_epoch=start_epoch, opt_d_state=opt_d_state, opt_g_state=opt_g_state, history=h1,
+        checkpoint_epochs=stage1_ck_epochs, checkpoint_callback=save_stage1_epoch,
     )
     stage1_path = out / "stage1_oasis.pt"
     _atomic_torch_save(
-        {
-            **common,
-            "arm": "Stage-I",
-            "discriminator": d.state_dict(),
-            "generator": g.state_dict(),
-            "generator_width": a.generator_width,
-            "noise_channels": a.noise_channels,
-            "history": h1,
-            "training_only_generator": True,
-        },
+        _stage1_state(d, g, opt_d, opt_g, completed_epoch=a.stage1_epochs, history=h1, common=common),
         stage1_path,
     )
-    m1 = evaluate_logits(d, val_loader, device, stage1=True)
+    t1, c1, m1, r1 = _calibrate_validate(d, cal_ds, val_ds, device, a, stage1=True)
+    a1_path = out / "a1_direct.pt"
+    _atomic_torch_save({
+        **common, "arm": "A1", "stage1_discriminator": d.state_dict(),
+        "calibrated_threshold": t1, "calibration_metrics": c1,
+        "source_stage1_sha256": _sha256(stage1_path),
+        "inference_contract": "RGB -> Stage-I D real-class logits -> CAL-frozen threshold",
+    }, a1_path)
+    r1_path = out / "a1_val_per_image.jsonl"
     results["arms"]["A1"] = {
-        **m1,
-        "checkpoint": str(stage1_path),
-        "checkpoint_sha256": _sha256(stage1_path),
-        "params": parameter_count(d),
-        "inference": "first two real-class logits only",
+        **m1, "calibration": c1, "calibrated_threshold": t1, "checkpoint": str(a1_path),
+        "checkpoint_sha256": _sha256(a1_path), "training_checkpoint_sha256": _sha256(stage1_path),
+        "per_image_sha256": _write_val_rows(r1_path, "A1", r1),
+        "params": parameter_count(d), "inference": "two real-class logits with CAL-frozen threshold",
     }
 
-    a2 = transfer_to_segmenter(d).to(device)
-    h2 = train_stage2(
-        a2, a2_loader, device, a.stage2_epochs, a.stage2_lr, a.dice_weight
+    a2_pre = transfer_to_segmenter(d).to(device)
+    a2_full = copy.deepcopy(a2_pre)
+    stage2_ck_epochs = tuple(e for e in _parse_int_list(a.stage2_checkpoints) if e <= a.stage2_epochs)
+    def save_a2_epoch(completed, model_, opt_, hist_):
+        _atomic_torch_save({
+            **common, "arm": "A2-Full-trajectory", "completed_epoch": completed,
+            "segmenter": model_.state_dict(), "optimizer": opt_.state_dict(), "history": hist_,
+            "source_stage1_sha256": _sha256(stage1_path), "calibrated_threshold": None,
+        }, out / f"a2_full_epoch_{completed:03d}.pt")
+    h2, _ = train_stage2(
+        a2_full, fit_ds, device, total_epochs=a.stage2_epochs, batch=a.batch, workers=a.workers,
+        lr=a.stage2_lr, dice_weight=a.dice_weight, seed=a.seed + 30,
+        checkpoint_epochs=stage2_ck_epochs, checkpoint_callback=save_a2_epoch,
     )
-    m2 = evaluate_logits(a2, val_loader, device)
-    a2_path = out / "a2_transferred.pt"
-    _atomic_torch_save(
-        {
-            **common,
-            "arm": "A2",
-            "segmenter": a2.state_dict(),
-            "history": h2,
-            "source_stage1_sha256": _sha256(stage1_path),
-            "inference_contract": "RGB -> transferred 2-class OASIS-A2S D",
-            "generator_in_checkpoint": False,
-        },
-        a2_path,
-    )
-    results["arms"]["A2"] = {
-        **m2,
-        "checkpoint": str(a2_path),
-        "checkpoint_sha256": _sha256(a2_path),
-        "params": parameter_count(a2),
+    t2, c2, m2, r2 = _calibrate_validate(a2_full, cal_ds, val_ds, device, a)
+    a2_path = out / "a2_full.pt"
+    _atomic_torch_save({
+        **common, "arm": "A2-Full", "segmenter": a2_full.state_dict(), "history": h2,
+        "source_stage1_sha256": _sha256(stage1_path), "calibrated_threshold": t2,
+        "calibration_metrics": c2, "generator_in_checkpoint": False,
+        "inference_contract": "RGB -> calibrated full-FT 2-class OASIS-A2S D",
+    }, a2_path)
+    r2_path = out / "a2_full_val_per_image.jsonl"
+    results["arms"]["A2-Full"] = {
+        **m2, "calibration": c2, "checkpoint": str(a2_path), "checkpoint_sha256": _sha256(a2_path),
+        "per_image_sha256": _write_val_rows(r2_path, "A2-Full", r2), "params": parameter_count(a2_full),
     }
-    results["delta_A2_minus_A0"] = {
-        k: m2[k] - m0[k]
-        for k in ("precision", "recall", "dice_f1", "iou", "accuracy")
+
+    a2_wi = interpolate_segmenters(a2_pre, a2_full, a.wise_alpha).to(device)
+    tw, cw, mw, rw = _calibrate_validate(a2_wi, cal_ds, val_ds, device, a)
+    wi_path = out / "a2_wi.pt"
+    _atomic_torch_save({
+        **common, "arm": "A2-WI", "segmenter": a2_wi.state_dict(), "wise_alpha": float(a.wise_alpha),
+        "source_stage1_sha256": _sha256(stage1_path), "source_full_ft_sha256": _sha256(a2_path),
+        "calibrated_threshold": tw, "calibration_metrics": cw, "generator_in_checkpoint": False,
+        "inference_contract": "RGB -> calibrated WI-interpolated 2-class OASIS-A2S D",
+    }, wi_path)
+    rw_path = out / "a2_wi_val_per_image.jsonl"
+    results["arms"]["A2-WI"] = {
+        **mw, "calibration": cw, "checkpoint": str(wi_path), "checkpoint_sha256": _sha256(wi_path),
+        "per_image_sha256": _write_val_rows(rw_path, "A2-WI", rw), "params": parameter_count(a2_wi),
+        "wise_alpha": float(a.wise_alpha),
     }
-    results["decision_gate"] = (
-        "continue"
-        if m2["dice_f1"] > m0["dice_f1"] and m2["iou"] > m0["iou"]
-        else "stop_or_inconclusive"
-    )
+
+    results["paired_val"]["A2-Full_minus_A0"] = paired_bootstrap(r0, r2, seed=a.seed + 501)
+    results["paired_val"]["A2-WI_minus_A0"] = paired_bootstrap(r0, rw, seed=a.seed + 502)
+    results["development_signal"] = {
+        "A2-Full": "positive" if results["paired_val"]["A2-Full_minus_A0"]["mean_delta_dice"] > 0 else "nonpositive",
+        "A2-WI": "positive" if results["paired_val"]["A2-WI_minus_A0"]["mean_delta_dice"] > 0 else "nonpositive",
+        "note": "Development signal only; no automatic Q1/final continue decision is made from VAL.",
+    }
     results["provenance"] = common
     (out / "results.json").write_text(json.dumps(results, indent=2))
     print(json.dumps(results, indent=2))
@@ -401,7 +564,8 @@ def build_parser():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--manifest", required=True)
     p.add_argument("--out", required=True)
-    p.add_argument("--train-split", default="train")
+    p.add_argument("--fit-split", default="fit")
+    p.add_argument("--cal-split", default="cal")
     p.add_argument("--val-split", default="val")
     p.add_argument("--size", type=int, default=256)
     p.add_argument("--batch", type=int, default=8)
@@ -411,23 +575,24 @@ def build_parser():
     p.add_argument("--width", type=int, default=24)
     p.add_argument("--generator-width", type=int, default=32)
     p.add_argument("--noise-channels", type=int, default=4)
-    p.add_argument("--stage1-epochs", type=int, default=30)
+    p.add_argument("--stage1-epochs", type=int, default=50)
+    p.add_argument("--stage1-checkpoints", default="1,3,5,10,20,30,50")
+    p.add_argument("--stage1-resume", default=None)
+    p.add_argument("--a0-epochs", type=int, default=100)
     p.add_argument("--stage2-epochs", type=int, default=30)
+    p.add_argument("--stage2-checkpoints", default="1,3,5,10,20,30")
     p.add_argument("--lr-d", type=float, default=4e-4)
     p.add_argument("--lr-g", type=float, default=1e-4)
     p.add_argument("--stage2-lr", type=float, default=2e-4)
     p.add_argument("--lambda-labelmix", type=float, default=10.0)
     p.add_argument("--dice-weight", type=float, default=1.0)
-    p.add_argument(
-        "--allow-nondeterministic",
-        action="store_true",
-        help="Allow faster nondeterministic kernels; never use for canonical evidence runs.",
-    )
-    p.add_argument(
-        "--allow-dirty",
-        action="store_true",
-        help="Allow a dirty Git worktree only for explicitly diagnostic runs.",
-    )
+    p.add_argument("--threshold-grid", default="0.10,0.15,0.20,0.25,0.30,0.35,0.40,0.45,0.50,0.55,0.60,0.65,0.70,0.75,0.80,0.85,0.90")
+    p.add_argument("--wise-alpha", type=float, default=0.8, help="Frozen development candidate; do not sweep on VAL/final data.")
+    p.add_argument("--allow-nondeterministic", action="store_true")
+    p.add_argument("--allow-dirty", action="store_true")
+    p.add_argument("--allow-unversioned", action="store_true", help="Diagnostic-only: permit running without a Git checkout.")
+    p.add_argument("--allow-missing-lineage", action="store_true", help="Diagnostic-only: canonical evidence requires lineage_id.")
+    p.add_argument("--allow-size-mismatch", action="store_true", help="Diagnostic-only: allow original image/mask size mismatch.")
     return p
 
 
