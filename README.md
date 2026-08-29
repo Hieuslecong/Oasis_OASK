@@ -1,179 +1,162 @@
-# OASIS-A2S v0.1 crack segmentation
+# OASIS-A2S v0.1.2 crack segmentation
 
-Experimental research branch implementing **OASIS-A2S v0.1**: semantic-adversarial OASIS pretraining followed by transfer of the same discriminator into a deployable 2-class crack segmenter.
+Experimental research branch for **OASIS-A2S v0.1** with implementation revision **0.1.2**. The scientific OASIS core is unchanged from v0.1.1; v0.1.2 hardens transfer, calibration, provenance and evaluation.
 
 ```text
 method_version          = OASIS-A2S-v0.1
-implementation_revision = 0.1.1
-package_version         = 0.1.1
-branch                  = feat/oasis-a2s-v0.1
+implementation_revision = 0.1.2
+package_version         = 0.1.2
+branch                  = feat/oasis-a2s-v0.1.2
 ```
 
-This branch is intentionally narrow. It does **not** add OASIS-RC critics, AOSK, Mamba, SAM, physics simulation or topology heads to the A2S core.
+## Scientific core — unchanged
 
-## Scientific hypothesis
-
-The Gate-1 question is deliberately simple:
-
-```text
-Does semantic-adversarial pretraining of an OASIS discriminator provide a
-better initialization for real-data crack segmentation than training the same
-2-class architecture from scratch?
-```
-
-The prototype evaluates three arms:
-
-```text
-A0  same 2-class discriminator architecture, supervised from scratch
-A1  Stage-I OASIS N+1 discriminator, evaluated through its two real classes
-A2  exact Stage-I D -> 2-class transfer, then real-only segmentation fine-tune
-```
-
-A0 and A2 use the same Stage-II architecture, loss, learning rate, epoch budget,
-resolution, data view and shuffle seed. Their intended difference is the OASIS
-semantic-adversarial initialization of A2.
-
-## Architecture and training contract
-
-For binary crack segmentation, Stage I predicts:
+Binary crack Stage-I OASIS predicts:
 
 ```text
 background / crack / fake
 ```
 
-The training-only generator is conditioned by the binary semantic map plus a
-spatial noise tensor. Stage-I training uses the OASIS principles required by the
-A2S hypothesis:
+Training keeps the OASIS mechanisms used by the A2S hypothesis:
 
 - per-pixel N+1 semantic discriminator objective;
-- inverse-frequency class balancing for real semantic classes;
+- inverse-frequency class balancing;
 - fake-class supervision for generated images;
-- semantic adversarial supervision for the generator;
+- semantic adversarial generator supervision;
 - class-aware LabelMix consistency;
-- semantic + 3D-noise conditioning in the generator.
+- semantic + global latent noise conditioning in the training-only generator.
 
-Reference defaults for the Stage-I pilot are:
+The discriminator remains a compact U-Net-style adaptation rather than a byte-for-byte copy of the archived upstream OASIS architecture. No Mamba, SAM, AOSK, physics simulator, extra critic, topology head or second decoder is added to the A2S core.
 
-```text
-lr_D             = 4e-4
-lr_G             = 1e-4
-lambda_labelmix  = 10
-```
+## v0.1.2 protocol
 
-The discriminator is a compact U-Net-style adaptation, not a byte-for-byte copy
-of the archived upstream OASIS architecture. OASIS-A2S reimplements the method
-principles needed for the transfer experiment rather than vendoring the upstream
-repository.
-
-## Exact A2S transfer
-
-Stage-I head:
+Development is strictly:
 
 ```text
-[BG, Crack, Fake]
+FIT -> CAL -> VAL
 ```
 
-Stage-II head:
+- **FIT**: train A0 and OASIS Stage-I / A2-Full.
+- **CAL**: select the crack-probability threshold from a frozen grid.
+- **VAL**: report development metrics and paired per-image deltas. VAL does not retune the threshold.
+- **TEST/final/holdout**: sealed by the development runner.
+
+Default threshold grid:
 
 ```text
-[BG, Crack]
+0.10, 0.15, ..., 0.90
 ```
 
-`transfer_to_segmenter()` preserves the encoder, decoder, skip-path parameters,
-and the BG/Crack classifier weights exactly; the Fake classifier row is removed.
-The entire transferred segmenter is then fine-tuned on real image/mask pairs.
+Thresholds are calibrated independently for each arm on CAL and stored in deployment checkpoints. The evaluator never searches thresholds on external/final data.
 
-## Inference contract
-
-Deployment is always:
+## Arms
 
 ```text
-RGB -> transferred 2-class OASIS-A2S discriminator -> crack mask
+A0       scratch 2-class supervised baseline
+A1       direct Stage-I OASIS D using its two real semantic logits
+A2-Full  exact D3 -> D2 transfer + full real-only fine-tuning
+A2-WI    frozen weight interpolation between transferred pre-FT and A2-Full
 ```
 
-The generator is training-only and must not be present in A0/A2 deployment
-checkpoints. No critic, generator, discriminator wrapper or AOSK state is accepted
-by the deployment evaluator.
-
-## Development firewall
-
-Development training rejects split names containing semantic tokens:
+For the current development protocol:
 
 ```text
-test
-final
-holdout
+A2-WI alpha = 0.8
 ```
 
-Examples rejected include `test`, `final_external`, `test_2026`,
-`external-final`, `holdout_v2` and `evaluation_test`.
+This alpha is a **frozen development-discovered candidate**, not an optimization target and not a claimed novelty. Do not sweep alpha on VAL/final data.
 
-The development evaluator is also manifest-provenance bound. By default:
+## Training trajectories and resumability
+
+Stage-I defaults to a 50-epoch maximum and saves:
 
 ```text
-SHA256(evaluation manifest) == checkpoint.manifest_sha256
+1 / 3 / 5 / 10 / 20 / 30 / 50
 ```
 
-is mandatory. Development evaluation cannot override a manifest mismatch. A
-future frozen external/final evaluation must opt in explicitly and the mismatch
-and final-test overrides are recorded in the output artifact.
+Stage-I checkpoints contain D/G weights, both optimizer states, history and RNG state. `--stage1-resume` continues from the saved optimizer state; optimizer-reset continuation is not canonical evidence.
 
-## Reproducibility policy
-
-Canonical development runs enable deterministic PyTorch algorithms, disable
-cuDNN benchmarking, enable deterministic cuDNN behavior, seed Python/NumPy/Torch,
-and configure `CUBLAS_WORKSPACE_CONFIG` before CUDA seeding. Because PyTorch does
-not guarantee identical results across releases, platforms, or CPU/GPU backends,
-reproducibility claims are scoped to a frozen software/hardware execution setup.
-
-Checkpoints record:
+A2-Full saves Stage-II trajectory checkpoints at:
 
 ```text
-method + implementation revision
-git commit + dirty state
-manifest SHA256
-train/validation split names
-seed, resolution and learning rates
-epoch budgets and loss weights
-PyTorch/CUDA/cuDNN/device determinism metadata
+1 / 3 / 5 / 10 / 20 / 30
 ```
 
-## Prototype command
+A0 receives a longer fixed default budget (`--a0-epochs 100`) so the scratch control is not intentionally under-trained. Epoch budgets remain protocol parameters and should be frozen before confirmatory runs.
+
+## Metrics
+
+v0.1.2 adds evaluation-only structural and reliability metrics without changing the Gate-1 training loss:
+
+```text
+Precision / Recall / Dice / IoU / Accuracy
+mean per-image Dice
+clDice
+Boundary-F1 (1 px tolerance at evaluation resolution)
+normal-image false-positive pixel fraction
+paired per-image Dice bootstrap 95% CI
+```
+
+clDice/Boundary-F1 are **metrics only** in v0.1.2. They are not added to the training objective, preserving attribution to OASIS pretraining/transfer.
+
+## Data and leakage preflight
+
+Canonical runs hash dataset bytes, not only manifest text. Preflight requires FIT/CAL/VAL and by default enforces:
+
+- non-empty FIT/CAL/VAL;
+- `lineage_id` for every evidence row;
+- no lineage crossing FIT/CAL/VAL;
+- no exact RGB SHA256 duplicate crossing FIT/CAL/VAL;
+- no duplicate canonical evidence row;
+- matching original image/mask dimensions;
+- valid normal-row/mask contracts.
+
+The checkpoint records `dataset_content_sha256`, split counts and audit metadata. Diagnostic-only overrides are explicit (`--allow-missing-lineage`, `--allow-size-mismatch`).
+
+## Git / reproducibility contract
+
+Canonical runs require a resolvable Git HEAD and a clean worktree. Running from an unversioned ZIP fails closed unless `--allow-unversioned` is explicitly supplied for diagnostics. Dirty-tree runs also require an explicit diagnostic override.
+
+Deterministic runs seed Python/NumPy/PyTorch, disable cuDNN benchmarking, enable deterministic algorithms and set the CUDA workspace configuration when applicable. Reproducibility claims remain scoped to a frozen environment; PyTorch does not promise bit-identical results across releases/platforms.
+
+## Deployment
+
+Deployment is one network only:
+
+```text
+RGB -> A1 Stage-I real logits or 2-class A0/A2 model -> frozen CAL threshold -> crack mask
+```
+
+The generator and optimizers are not accepted by deployment evaluation checkpoints.
+
+## Canonical pilot command
 
 ```bash
 python -m oasis_cycle_aosk.train_a2s \
   --manifest /path/to/manifest.jsonl \
-  --out /path/to/experiments/a2s_gate1_seed1337 \
-  --train-split train \
+  --out /path/to/a2s_v012_seed1337 \
+  --fit-split fit \
+  --cal-split cal \
   --val-split val \
   --size 256 \
   --batch 8 \
   --device cuda \
   --seed 1337 \
-  --stage1-epochs 30 \
-  --stage2-epochs 30
+  --stage1-epochs 50 \
+  --a0-epochs 100 \
+  --stage2-epochs 30 \
+  --wise-alpha 0.8
 ```
 
-Do not use `--allow-nondeterministic` for canonical evidence runs.
+Do not use diagnostic overrides for canonical evidence.
 
-## Verification
+## Decision policy
 
-Before real Gate-1 training, run from a clean checkout of the exact frozen commit:
+`results.json` reports **development signals**, not an automatic publish/continue gate. Primary paired comparisons are:
 
-```bash
-python -m compileall src tests
-pytest -q
+```text
+A2-Full - A0
+A2-WI   - A0
 ```
 
-Then run a small CPU or GPU end-to-end smoke using only train/validation rows.
-Mechanical smoke success does not establish scientific efficacy.
-
-The v0.1 Gate-1 decision is based on A0 versus A2. If A2 does not improve over A0
-under the frozen pilot protocol, the OASIS-A2S direction should be treated as
-negative/inconclusive rather than rescued by adding unrelated architecture.
-
-## Historical OASIS-RC work
-
-The parent branch `feat/oasis-rc-v2.1-dev3-q1` preserves the previous OASIS-RC-v2.1
-experiments and documentation. This A2S branch intentionally separates the new
-method hypothesis from that historical path.
+A fresh source-disjoint test must be used after method choices are frozen. Previously inspected debug/test packs are development diagnostics and must not be reused as final unbiased evidence.
