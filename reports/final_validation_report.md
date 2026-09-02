@@ -1,4 +1,4 @@
-# Final validation report â current workspace
+# Final validation report — current workspace
 
 ## Correctness
 

@@ -1,4 +1,4 @@
-# Phase 0 â Repository Audit
+# Phase 0 — Repository Audit
 
 **Repository:** `Hieuslecong/Oasis_OASK`  
 **Audited ref:** `main`  
