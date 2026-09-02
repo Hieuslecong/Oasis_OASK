@@ -1,0 +1,20 @@
+seed: 1337
+device: cpu
+epochs: 2
+run_dir: runs/stress_dev_toy
+mode: baseline
+dataset:
+  manifest: /path/to/manifest.jsonl
+  size: 32
+  batch_size: 2
+  splits: [train, val, test]
+model:
+  name: unet
+  width: 8
+optimizer:
+  lr: 0.001
+renderer:
+  backend: toy
+stress:
+  candidates: 4
+  hard_weight: 0.5

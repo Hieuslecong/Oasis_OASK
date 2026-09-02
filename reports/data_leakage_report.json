@@ -1,0 +1,9 @@
+{
+  "status": "BLOCKED_UNVERIFIED",
+  "manifest": "manifests/manifest.jsonl",
+  "rows": 90,
+  "issues": [
+    {"type": "missing_external_data_paths", "count": 90}
+  ],
+  "notes": "Real files are not present in this workspace; no clean-data claim is made."
+}

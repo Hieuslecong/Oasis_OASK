@@ -184,3 +184,22 @@ repair is intended to test whether true-normal supervision restores useful
 false-positive suppression under a controlled protocol. A negative result is
 valid evidence; do not tune on test or lower critic gates after observing
 results.
+
+## DP-GAN stress framework (experimental)
+
+The new `crack_stress` package is an isolated, renderer-agnostic extension.
+DP-GAN is a training-time stress renderer only; deployment remains
+`RGB -> segmenter -> crack mask`. The current repository does not contain a
+verified DP-GAN checkpoint, so DP-GAN qualification and real-data training are
+blocked until a source-compatible checkpoint and real manifest are supplied.
+
+Implemented building blocks:
+
+- dynamic `NuisanceVector`, manifest `DatasetRegistry`, and background nuisance calibration;
+- binary/F1/IoU/clDice/component metrics and structural validity envelope;
+- fail-closed `DPGANStressRenderer` adapter, random sampling, and frozen-segmenter candidate search;
+- CPU trainer/evaluator, checkpoint resume with RNG state, and correctness tests.
+
+Toy renderer commands are implementation tests only. Do not interpret their
+metrics as DP-GAN realism, cross-domain robustness, or paper evidence. The
+G0/G1/G2 model decision is documented in `reports/DPGAN_MODEL_SELECTION.md`.

@@ -1,0 +1,4 @@
+component,device,seconds,peak_memory_mb,status,notes
+unit_tests,CPU,,,pass,33_tests
+toy_training,CPU,,,pass,implementation_only
+DPGAN_renderer,,,,blocked,checkpoint_missing

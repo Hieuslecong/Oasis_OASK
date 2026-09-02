@@ -1,0 +1,16 @@
+seed: 1337
+device: cpu
+epochs: 1
+run_dir: runs/baseline_unet
+dataset:
+  manifest: /path/to/manifest.jsonl
+  size: 128
+  batch_size: 2
+  splits: [train, val, test]
+model:
+  name: unet
+  width: 16
+optimizer:
+  lr: 0.001
+renderer:
+  backend: none
